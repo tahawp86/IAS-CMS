@@ -292,6 +292,43 @@ class MonitorWindow(QMainWindow):
             self.show()
         return False
 
+    # -- حالت شناور: کاربر خودش با موس جابه‌جا می‌کند --
+
+    def open_floating(self, geom=None):
+        """باز کردن به‌صورت پنجره‌ی عادیِ قابل‌حرکت/تغییراندازه."""
+        if geom and len(geom) == 4:
+            try:
+                self.setGeometry(int(geom[0]), int(geom[1]),
+                                 int(geom[2]), int(geom[3]))
+            except Exception:
+                pass
+        self.showNormal()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def get_geom(self):
+        g = self.geometry()
+        return [g.x(), g.y(), g.width(), g.height()]
+
+    def toggle_fullscreen(self):
+        if self.isFullScreen():
+            self.showNormal()
+        else:
+            self.showFullScreen()
+
+    def mouseDoubleClickEvent(self, ev):
+        # دابل‌کلیک = تمام‌صفحه/برگشت (برای پنجره‌های شناور)
+        self.toggle_fullscreen()
+        super().mouseDoubleClickEvent(ev)
+
+    def keyPressEvent(self, ev):
+        # Esc = خروج از تمام‌صفحه
+        if ev.key() == Qt.Key.Key_Escape and self.isFullScreen():
+            self.showNormal()
+            return
+        super().keyPressEvent(ev)
+
     def closeEvent(self, ev):
         for t in self._tiles:
             t.stop()
@@ -350,12 +387,16 @@ class MonitorRoomDialog(QDialog):
     # -- لیست نماها --
 
     def _view_label(self, v):
+        n = len(v.get("cam_ids", []))
+        if v.get("mode") == "floating":
+            fs = "تمام‌صفحه" if v.get("fullscreen") else "شناور"
+            return (f"🪟 پنجره‌ی شناور — گرید {v.get('grid', 4)}تایی — "
+                    f"{n} دوربین — {fs}")
         mon_name = f"مانیتور {v['monitor'] + 1}"
         for m in self._monitors:
             if m["index"] == v["monitor"]:
                 mon_name = m["name"]
                 break
-        n = len(v.get("cam_ids", []))
         fs = "تمام‌صفحه" if v.get("fullscreen") else "پنجره‌ای"
         return (f"{mon_name} — گرید {v.get('grid', 4)}تایی — "
                 f"{n} دوربین — {fs}")
@@ -405,6 +446,19 @@ class MonitorRoomDialog(QDialog):
         d.setMinimumWidth(480)
         lay = QVBoxLayout(d)
 
+        # حالت نما: مانیتور مشخص یا پنجره‌ی شناور
+        mode_row = QHBoxLayout()
+        float_check = QCheckBox("🪟 پنجره‌ی شناور (خودم با موس جابه‌جاش می‌کنم)")
+        float_check.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        float_check.setChecked(v.get("mode", "monitor") == "floating")
+        float_check.setToolTip(
+            "اگر فعال باشد، پنجره به‌صورت عادی (قابل حرکت و تغییراندازه)\n"
+            "باز می‌شود تا خودتان آن را به مانیتور دلخواه درگ کنید؛\n"
+            "دابل‌کلیک = تمام‌صفحه، Esc = خروج از تمام‌صفحه.")
+        mode_row.addWidget(float_check)
+        mode_row.addStretch()
+        lay.addLayout(mode_row)
+
         # مانیتور
         mrow = QHBoxLayout()
         mrow.addWidget(QLabel("مانیتور:"))
@@ -418,6 +472,10 @@ class MonitorRoomDialog(QDialog):
         mon_combo.setCurrentIndex(max(0, idx))
         mrow.addWidget(mon_combo, 1)
         lay.addLayout(mrow)
+        # در حالت شناور، انتخاب مانیتور بی‌معناست
+        mon_combo.setEnabled(not float_check.isChecked())
+        float_check.toggled.connect(
+            lambda on: mon_combo.setEnabled(not on))
 
         # گرید + تمام‌صفحه
         grow = QHBoxLayout()
@@ -472,6 +530,7 @@ class MonitorRoomDialog(QDialog):
 
         if d.exec() != QDialog.DialogCode.Accepted:
             return False
+        v["mode"] = "floating" if float_check.isChecked() else "monitor"
         v["monitor"] = mon_combo.currentData()
         v["grid"] = grid_combo.currentData()
         v["fullscreen"] = fs_check.isChecked()
@@ -518,13 +577,18 @@ class MonitorRoomManager:
         views = []
         for w in self.windows:
             try:
-                views.append({
+                v = {
+                    "mode": getattr(w, "_view_mode", "monitor"),
                     "monitor": getattr(w, "_mon_index", 0),
                     "grid": w._grid_size,
                     "fullscreen": w.isFullScreen(),
                     "cam_ids": [str((t.cam or {}).get("id", ""))
                                 for t in w._tiles if t.cam],
-                })
+                }
+                # موقعیت/اندازه‌ی پنجره‌های شناور هم ذخیره شود
+                if v["mode"] == "floating" and not w.isFullScreen():
+                    v["geom"] = w.get_geom()
+                views.append(v)
             except Exception:
                 continue
         return views
@@ -552,6 +616,8 @@ class MonitorRoomManager:
             try:
                 win = MonitorWindow(f"🖥️ اتاق مانیتورینگ — نمای {i + 1}",
                                     self.main)
+                mode = v.get("mode", "monitor")
+                win._view_mode = mode
                 win._mon_index = int(v.get("monitor", 0))
                 grid = int(v.get("grid", 4))
                 if grid not in GRID_CHOICES:
@@ -568,12 +634,22 @@ class MonitorRoomManager:
                         url = ""
                     pairs.append((cam, url))
                 win.set_cameras(pairs)
-                mon = monitors.get(win._mon_index)
-                if mon is not None:
-                    win.move_to_monitor(mon, bool(v.get("fullscreen", True)))
+                if mode == "floating":
+                    # پنجره‌ی شناور: کاربر خودش با موس جابه‌جا می‌کند
+                    geom = v.get("geom")
+                    if not geom:
+                        # آبشاری: هر پنجره‌ی بعدی کمی جابه‌جا
+                        geom = [80 + i * 40, 80 + i * 40, 960, 600]
+                    win.open_floating(geom)
+                    if v.get("fullscreen"):
+                        win.showFullScreen()
                 else:
-                    (win.showFullScreen() if v.get("fullscreen")
-                     else win.show())
+                    mon = monitors.get(win._mon_index)
+                    if mon is not None:
+                        win.move_to_monitor(mon, bool(v.get("fullscreen", True)))
+                    else:
+                        (win.showFullScreen() if v.get("fullscreen")
+                         else win.show())
                 self.windows.append(win)
             except Exception:
                 continue
