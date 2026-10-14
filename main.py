@@ -2608,6 +2608,27 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._maybe_show_update_notice()
+        # (2.2.4) اتاق مانیتورینگ: ساخت مدیر + بازیابی چیدمان ذخیره‌شده.
+        try:
+            from monitor_room import MonitorRoomManager
+            self.monitor_room_manager = MonitorRoomManager(self)
+            self.monitor_room_manager.restore_on_startup()
+        except Exception:
+            self.monitor_room_manager = None
+
+    def open_monitor_room(self):
+        """(2.2.4) باز کردن دیالوگ مدیریت اتاق مانیتورینگ."""
+        try:
+            mgr = getattr(self, "monitor_room_manager", None)
+            if mgr is None:
+                from monitor_room import MonitorRoomManager
+                mgr = MonitorRoomManager(self)
+                self.monitor_room_manager = mgr
+            mgr.open_manager()
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "اتاق مانیتورینگ",
+                                f"خطا در باز کردن اتاق مانیتورینگ:\n{e}")
 
     def _maybe_show_update_notice(self):
         """اگر موتور آپدیت تازه نسخه‌ی جدید را اعمال کرده، پنجره‌ی
@@ -4800,6 +4821,15 @@ class MainWindow(QMainWindow):
             btn.clicked.connect(lambda _checked=False, _key=key: self.show_page(_key))
             header_layout.addWidget(btn)
             self.nav_buttons[key] = btn
+        # (2.2.4) دکمه‌ی «اتاق مانیتورینگ» — پنجره‌های نمایش روی چند مانیتور
+        # (صفحه نیست؛ دیالوگ مدیریت نماها را باز می‌کند).
+        self.monitor_room_btn = QPushButton("🖥️ اتاق مانیتورینگ")
+        self.monitor_room_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.monitor_room_btn.setStyleSheet(
+            "QPushButton{padding: 6px 14px; border-radius: 6px; font-size: 12px;}"
+        )
+        self.monitor_room_btn.clicked.connect(self.open_monitor_room)
+        header_layout.addWidget(self.monitor_room_btn)
         # (1.0.0) دکمه‌ی «راهنما» از هدر حذف شد — به داخل هر صفحه/tab منتقل می‌شود.
         # نشان نسخه
         ver_label = QLabel(f"v{self.app_version}")
@@ -6066,6 +6096,13 @@ class MainWindow(QMainWindow):
                 self.alarm_player.stop()
             except Exception:
                 pass
+        # (2.2.4) اتاق مانیتورینگ: ذخیره‌ی چیدمان + بستن پنجره‌های مانیتورها.
+        try:
+            mgr = getattr(self, "monitor_room_manager", None)
+            if mgr is not None:
+                mgr.shutdown()
+        except Exception:
+            pass
 
         # (2.0.15-beta) هنگام خروج از برنامه، رمزهای حافظه پاک می‌شوند؛
         # رمزهای رمزنگاری‌شده‌ی روی دیسک (در صورت فعال بودن ذخیره‌ی امن)
