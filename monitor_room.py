@@ -17,12 +17,12 @@ import os
 import time
 
 import cv2
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QGuiApplication, QImage, QPainter, QColor, QFont
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint
+from PyQt6.QtGui import QGuiApplication, QImage, QPainter, QColor, QFont, QPen, QPolygon
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QComboBox, QCheckBox, QListWidget, QListWidgetItem,
-    QMessageBox, QScrollArea, QGroupBox, QSpinBox,
+    QMessageBox, QScrollArea, QGroupBox, QSpinBox, QToolBar, QDockWidget,
 )
 
 from app_paths import get_data_dir
@@ -125,20 +125,37 @@ class _MonitorStreamWorker(QThread):
 # ------------------------------------------------------------------ tile --
 
 class MonitorTileWidget(QWidget):
-    """یک خانه‌ی نمایش در پنجره‌ی مانیتور: نام دوربین + تصویر زنده."""
+    """یک خانه‌ی نمایش در پنجره‌ی مانیتور: نام دوربین + تصویر زنده.
+
+    (2.2.8) انتخاب تایل (کلیک) + زوم دیجیتال + رسم محدوده — برای نوار
+    ابزار مدیریت دوربین در پنجره‌های شناور نما.
+    """
+
+    clicked = pyqtSignal(object)  # self
+    zone_drawn = pyqtSignal(list)  # points نرمال‌شده
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.cam = None
+        self._rtsp_url = None
         self._worker = None
         self._img = None
         self._status = "empty"  # empty|connecting|live|error
         self.setMinimumSize(160, 120)
         self.setStyleSheet("background: #0d1117;")
+        # انتخاب / زوم / رسم
+        self._selected = False
+        self._zoom = 1.0
+        self._draw_mode = False
+        self._draw_start = None
+        self._draw_cur = None
+        self._zones = []
+        self.setMouseTracking(True)
 
     def set_camera(self, cam, rtsp_url):
         self.stop()
         self.cam = dict(cam) if cam else None
+        self._rtsp_url = rtsp_url
         self._img = None
         if not self.cam or not rtsp_url:
             self._status = "empty"
@@ -175,6 +192,83 @@ class MonitorTileWidget(QWidget):
         self._status = st
         self.update()
 
+    # -- انتخاب / زوم / رسم (2.2.8) --
+
+    def set_selected(self, on):
+        self._selected = bool(on)
+        self.update()
+
+    def set_zoom(self, z):
+        self._zoom = max(1.0, min(8.0, float(z)))
+        self.update()
+
+    def zoom_step(self, direction):
+        self.set_zoom(self._zoom * (1.25 if direction > 0 else 1 / 1.25))
+
+    def reset_zoom(self):
+        self.set_zoom(1.0)
+
+    def set_draw_mode(self, on):
+        self._draw_mode = bool(on)
+        self._draw_start = None
+        self._draw_cur = None
+        self.setCursor(Qt.CursorShape.CrossCursor if on
+                       else Qt.CursorShape.ArrowCursor)
+        self.update()
+
+    def set_zones(self, zones):
+        self._zones = []
+        for z in (zones or []):
+            pts = z.get("points") if isinstance(z, dict) else None
+            if pts:
+                self._zones.append(list(pts))
+        self.update()
+
+    def _widget_to_norm(self, x, y):
+        if self._img is None:
+            return None
+        iw, ih = self._img.width(), self._img.height()
+        rw, rh = self.width(), self.height()
+        scale = min(rw / max(1, iw), rh / max(1, ih))
+        dw, dh = iw * scale, ih * scale
+        ox, oy = (rw - dw) / 2, (rh - dh) / 2
+        zw, zh = dw / self._zoom, dh / self._zoom
+        zx = ox + (dw - zw) / 2
+        zy = oy + (dh - zh) / 2
+        nx = (x - zx) / max(1, zw)
+        ny = (y - zy) / max(1, zh)
+        return (max(0.0, min(1.0, nx)), max(0.0, min(1.0, ny)))
+
+    def mousePressEvent(self, ev):
+        if self._draw_mode and ev.button() == Qt.MouseButton.LeftButton:
+            self._draw_start = (ev.position().x(), ev.position().y())
+            self._draw_cur = self._draw_start
+        else:
+            self.clicked.emit(self)
+        super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev):
+        if self._draw_mode and self._draw_start:
+            self._draw_cur = (ev.position().x(), ev.position().y())
+            self.update()
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if self._draw_mode and self._draw_start:
+            x0, y0 = self._draw_start
+            x1, y1 = ev.position().x(), ev.position().y()
+            self._draw_start = None
+            self._draw_cur = None
+            if abs(x1 - x0) > 10 and abs(y1 - y0) > 10 and self._img:
+                p1 = self._widget_to_norm(min(x0, x1), min(y0, y1))
+                p2 = self._widget_to_norm(max(x0, x1), max(y0, y1))
+                if p1 and p2:
+                    points = [p1, (p2[0], p1[1]), p2, (p1[0], p2[1])]
+                    self.zone_drawn.emit(points)
+            self.set_draw_mode(False)
+            self.update()
+        super().mouseReleaseEvent(ev)
+
     def paintEvent(self, ev):
         p = QPainter(self)
         p.fillRect(self.rect(), QColor("#0d1117"))
@@ -185,9 +279,33 @@ class MonitorTileWidget(QWidget):
             scale = min(rw / max(1, iw), rh / max(1, ih))
             dw, dh = int(iw * scale), int(ih * scale)
             x, y = (rw - dw) // 2, (rh - dh) // 2
-            p.drawImage(x, y, self._img.scaled(
-                dw, dh, Qt.AspectRatioMode.IgnoreAspectRatio,
-                Qt.TransformationMode.SmoothTransformation))
+            if self._zoom > 1.0:
+                sw, sh = int(iw / self._zoom), int(ih / self._zoom)
+                sx = (iw - sw) // 2
+                sy = (ih - sh) // 2
+                crop = self._img.copy(sx, sy, sw, sh)
+                p.drawImage(x, y, crop.scaled(
+                    dw, dh, Qt.AspectRatioMode.IgnoreAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation))
+            else:
+                p.drawImage(x, y, self._img.scaled(
+                    dw, dh, Qt.AspectRatioMode.IgnoreAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation))
+            # رسم زون‌ها
+            if self._zones:
+                p.setPen(QPen(QColor("#e74c3c"), 2))
+                for pts in self._zones:
+                    poly = [QPoint(int(x + nx * dw), int(y + ny * dh))
+                            for (nx, ny) in pts]
+                    if len(poly) >= 3:
+                        p.drawPolygon(QPolygon(poly))
+            # مستطیل در حال رسم
+            if self._draw_mode and self._draw_start and self._draw_cur:
+                p.setPen(QPen(QColor("#2a9bd8"), 2, Qt.PenStyle.DashLine))
+                dx0, dy0 = self._draw_start
+                dx1, dy1 = self._draw_cur
+                p.drawRect(int(min(dx0, dx1)), int(min(dy0, dy1)),
+                           int(abs(dx1 - dx0)), int(abs(dy1 - dy0)))
         # نوار نام دوربین
         name = (self.cam or {}).get("name", "")
         if name or self._status in ("connecting", "error"):
@@ -205,6 +323,10 @@ class MonitorTileWidget(QWidget):
         if self._status == "error":
             p.setPen(QColor("#e74c3c"))
             p.drawRect(1, 1, self.width() - 2, self.height() - 2)
+        # قاب آبی برای تایل انتخاب‌شده
+        if self._selected:
+            p.setPen(QPen(QColor("#2a9bd8"), 3))
+            p.drawRect(2, 2, self.width() - 4, self.height() - 4)
         p.end()
 
     def closeEvent(self, ev):
@@ -222,6 +344,9 @@ class MonitorWindow(QMainWindow):
         self.setWindowTitle(title)
         self._tiles = []
         self._grid_size = 4
+        self._selected_tile = None
+        # دسترسی به storeها از پنجره‌ی اصلی (برای مدیریت دوربین)
+        self._main = parent
         central = QWidget(self)
         self._grid = QGridLayout(central)
         self._grid.setSpacing(4)
@@ -230,6 +355,290 @@ class MonitorWindow(QMainWindow):
         self.setStyleSheet("background: #0d1117;")
         self.resize(960, 600)
         self._build_tiles(4)
+        self._build_mgmt_toolbar()
+        self._build_event_dock()
+
+    def _camera_store(self):
+        try:
+            return self._main.camera_store
+        except Exception:
+            return None
+
+    def _report_store(self):
+        try:
+            from report_store import report_store
+            return report_store
+        except Exception:
+            return None
+
+    # -- نوار ابزار مدیریت دوربین (2.2.8) --
+
+    def _build_mgmt_toolbar(self):
+        tb = QToolBar("مدیریت دوربین", self)
+        tb.setMovable(False)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)
+        self._mgmt_toolbar = tb
+
+        tb.addWidget(QLabel("دوربین انتخاب‌شده:"))
+        self._sel_label = QLabel("—")
+        self._sel_label.setStyleSheet("color: #9b978c; padding: 0 8px;")
+        tb.addWidget(self._sel_label)
+        tb.addSeparator()
+
+        draw_act = tb.addAction("✏️ رسم محدوده")
+        draw_act.triggered.connect(self._mgmt_draw_zone)
+
+        zones_act = tb.addAction("📋 محدوده‌ها")
+        zones_act.triggered.connect(self._mgmt_zones_dialog)
+
+        self._people_act = tb.addAction("🔢 شمارش افراد")
+        self._people_act.setCheckable(True)
+        self._people_act.triggered.connect(self._mgmt_toggle_people)
+
+        audio_act = tb.addAction("🎧 صدا")
+        audio_act.triggered.connect(self._mgmt_audio)
+
+        tb.addSeparator()
+        zoom_out = tb.addAction("🔍−")
+        zoom_out.triggered.connect(lambda: self._mgmt_zoom(-1))
+        zoom_in = tb.addAction("🔍+")
+        zoom_in.triggered.connect(lambda: self._mgmt_zoom(1))
+        zoom_reset = tb.addAction("↺")
+        zoom_reset.setToolTip("بازنشانی زوم")
+        zoom_reset.triggered.connect(self._mgmt_zoom_reset)
+
+        tb.addSeparator()
+        tb.addWidget(QLabel("چیدمان:"))
+        self._grid_combo = QComboBox()
+        for n in GRID_CHOICES:
+            self._grid_combo.addItem(str(n), n)
+        self._grid_combo.setCurrentIndex(GRID_CHOICES.index(4))
+        self._grid_combo.currentIndexChanged.connect(self._mgmt_grid_changed)
+        tb.addWidget(self._grid_combo)
+
+        tb.addSeparator()
+        self._events_act = tb.addAction("📊 رویدادها")
+        self._events_act.setCheckable(True)
+        self._events_act.triggered.connect(self._mgmt_toggle_events)
+
+        tb.addSeparator()
+        console_act = tb.addAction("🎛️ کنسول کامل")
+        console_act.triggered.connect(self._mgmt_open_console)
+
+    def _build_event_dock(self):
+        dock = QDockWidget("📊 رویدادهای دوربین", self)
+        dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea |
+                             Qt.DockWidgetArea.LeftDockWidgetArea)
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        self._event_list = QListWidget()
+        lay.addWidget(self._event_list)
+        dock.setWidget(w)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        dock.setVisible(False)
+        self._event_dock = dock
+
+    # -- انتخاب تایل --
+
+    def _on_tile_clicked(self, tile):
+        for t in self._tiles:
+            t.set_selected(t is tile)
+        self._selected_tile = tile
+        name = (tile.cam or {}).get("name", "—") if tile.cam else "—"
+        self._sel_label.setText(name)
+        # همگام‌سازی وضعیت شمارش افراد
+        try:
+            on = bool((tile.cam or {}).get("people_counting", False))
+            self._people_act.setChecked(on)
+        except Exception:
+            pass
+        # به‌روزرسانی پنل رویدادها
+        if self._event_dock.isVisible():
+            self._refresh_events()
+
+    def _require_tile(self):
+        t = self._selected_tile
+        if t is None or t.cam is None:
+            QMessageBox.information(self, "مدیریت دوربین",
+                                    "اول یک دوربین را در گرید انتخاب کنید (کلیک).")
+            return None
+        return t
+
+    # -- اکشن‌های نوار ابزار --
+
+    def _mgmt_draw_zone(self):
+        t = self._require_tile()
+        if t:
+            # حالت رسم را روی تایل فعال کن؛ بعد از رسم، zone_drawn می‌آید
+            for o in self._tiles:
+                o.set_draw_mode(o is t)
+
+    def _on_zone_drawn(self, points):
+        t = self._selected_tile
+        if t is None or t.cam is None:
+            return
+        from PyQt6.QtWidgets import QInputDialog
+        import uuid as _uuid
+        name, ok = QInputDialog.getText(self, "محدوده جدید", "نام محدوده:")
+        if not ok:
+            return
+        zones = list(t.cam.get("regions") or [])
+        name = name.strip() or f"محدوده {len(zones) + 1}"
+        zones.append({"id": str(_uuid.uuid4()), "number": len(zones) + 1,
+                      "name": name, "points": [list(p) for p in points]})
+        self._save_tile_zones(t, zones)
+
+    def _save_tile_zones(self, t, zones):
+        t.cam["regions"] = zones
+        t.set_zones(zones)
+        try:
+            cs = self._camera_store()
+            if cs and t.cam.get("id"):
+                cs.update_camera(t.cam["id"], regions=zones)
+        except Exception:
+            pass
+
+    def _mgmt_zones_dialog(self):
+        t = self._require_tile()
+        if not t:
+            return
+        from PyQt6.QtWidgets import QDialog as _QD, QVBoxLayout as _VL, \
+            QHBoxLayout as _HL, QPushButton as _PB, QListWidget as _LW
+        dlg = _QD(self)
+        dlg.setWindowTitle(f"مدیریت محدوده‌ها — {(t.cam or {}).get('name', '')}")
+        dlg.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        dlg.resize(320, 300)
+        lay = _VL(dlg)
+        lw = _LW()
+        zones = list(t.cam.get("regions") or [])
+        for z in zones:
+            _lw_item = QListWidgetItem(z.get("name") or f"محدوده {z.get('number', '?')}")
+            _lw_item.setData(Qt.ItemDataRole.UserRole, z.get("id"))
+            lw.addItem(_lw_item)
+        lay.addWidget(lw)
+        row = _HL()
+        del_btn = _PB("🗑 حذف انتخاب‌شده")
+        def _del():
+            it = lw.currentItem()
+            if not it:
+                return
+            zid = it.data(Qt.ItemDataRole.UserRole)
+            nz = [z for z in zones if z.get("id") != zid]
+            zones.clear()
+            zones.extend(nz)
+            self._save_tile_zones(t, zones)
+            lw.clear()
+            for z in zones:
+                _it = QListWidgetItem(z.get("name") or "?")
+                _it.setData(Qt.ItemDataRole.UserRole, z.get("id"))
+                lw.addItem(_it)
+        del_btn.clicked.connect(_del)
+        row.addWidget(del_btn)
+        close_btn = _PB("بستن")
+        close_btn.clicked.connect(dlg.accept)
+        row.addWidget(close_btn)
+        lay.addLayout(row)
+        dlg.exec()
+
+    def _mgmt_toggle_people(self, on):
+        t = self._require_tile()
+        if not t:
+            self._people_act.setChecked(not on)
+            return
+        t.cam["people_counting"] = bool(on)
+        try:
+            cs = self._camera_store()
+            if cs and t.cam.get("id"):
+                cs.update_camera(t.cam["id"], people_counting=bool(on))
+        except Exception:
+            pass
+
+    def _mgmt_audio(self):
+        t = self._require_tile()
+        if not t:
+            return
+        from PyQt6.QtWidgets import QDialog as _QD, QVBoxLayout as _VL, \
+            QPushButton as _PB
+        dlg = _QD(self)
+        dlg.setWindowTitle("🎧 صدا")
+        dlg.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        lay = _VL(dlg)
+        lb = _PB("🎧 شنیدن صدای دوربین")
+        lb.clicked.connect(lambda: self._open_listen(dict(t.cam)))
+        tb = _PB("🎤 صحبت با دوربین")
+        tb.clicked.connect(lambda: self._open_talk(dict(t.cam)))
+        lay.addWidget(lb)
+        lay.addWidget(tb)
+        dlg.exec()
+
+    def _open_listen(self, cam):
+        try:
+            from listen_dialog import ListenDialog
+            ListenDialog(cam, parent=self).exec()
+        except Exception as e:
+            QMessageBox.warning(self, "خطا", f"باز کردن شنیدن صدا ممکن نشد:\n{e}")
+
+    def _open_talk(self, cam):
+        try:
+            from talk_dialog import TalkDialog
+            TalkDialog(cam, parent=self).exec()
+        except Exception as e:
+            QMessageBox.warning(self, "خطا", f"باز کردن صحبت ممکن نشد:\n{e}")
+
+    def _mgmt_zoom(self, direction):
+        t = self._require_tile()
+        if t:
+            t.zoom_step(direction)
+
+    def _mgmt_zoom_reset(self):
+        t = self._require_tile()
+        if t:
+            t.reset_zoom()
+
+    def _mgmt_grid_changed(self, idx):
+        n = self._grid_combo.currentData()
+        if n in GRID_CHOICES:
+            self.set_grid_size(n)
+
+    def _mgmt_toggle_events(self, on):
+        if on and not self._require_tile():
+            self._events_act.setChecked(False)
+            return
+        self._event_dock.setVisible(on)
+        if on:
+            self._refresh_events()
+
+    def _refresh_events(self):
+        self._event_list.clear()
+        t = self._selected_tile
+        if t is None or not t.cam:
+            return
+        rs = self._report_store()
+        if not rs:
+            return
+        try:
+            rows = rs.query(camera_name=t.cam.get("name", ""), limit=50)
+            for r in rows[:50]:
+                ts = r[0] if len(r) > 0 else ""
+                ev = r[1] if len(r) > 1 else ""
+                self._event_list.addItem(f"{ts} — {ev}")
+            if not rows:
+                self._event_list.addItem("رویدادی ثبت نشده است.")
+        except Exception:
+            pass
+
+    def _mgmt_open_console(self):
+        t = self._require_tile()
+        if not t:
+            return
+        try:
+            from camera_console import CameraConsoleDialog
+            dlg = CameraConsoleDialog(
+                dict(t.cam), camera_store=self._camera_store(),
+                report_store=self._report_store(), parent=self)
+            dlg.exec()
+        except Exception as e:
+            QMessageBox.warning(self, "خطا", f"باز کردن کنسول ممکن نشد:\n{e}")
 
     def _build_tiles(self, n):
         for t in self._tiles:
@@ -238,20 +647,29 @@ class MonitorWindow(QMainWindow):
             t.setParent(None)
             t.deleteLater()
         self._tiles = []
+        self._selected_tile = None
         rows = cols = int(n ** 0.5)
         for r in range(rows):
             for c in range(cols):
                 t = MonitorTileWidget(self)
+                t.clicked.connect(self._on_tile_clicked)
+                t.zone_drawn.connect(self._on_zone_drawn)
                 self._grid.addWidget(t, r, c)
                 self._tiles.append(t)
         self._grid_size = n
+        try:
+            self._grid_combo.setCurrentIndex(GRID_CHOICES.index(n))
+        except Exception:
+            pass
 
     def set_grid_size(self, n):
         if n not in GRID_CHOICES:
             n = 4
-        cams = [t.cam for t in self._tiles if t.cam]
+        # (2.2.8 - فیکس باگ قدیمی) جفت (cam, url) را نگه دار تا بعد از
+        # بازسازی تایل‌ها، استریم‌ها وصل بمانند
+        pairs = [(t.cam, t._rtsp_url) for t in self._tiles if t.cam]
         self._build_tiles(n)
-        self.set_cameras(cams)
+        self.set_cameras(pairs)
 
     def set_cameras(self, cam_url_list):
         """cam_url_list: لیست (cam_dict, rtsp_url)."""
@@ -259,6 +677,11 @@ class MonitorWindow(QMainWindow):
             if i < len(cam_url_list):
                 cam, url = cam_url_list[i]
                 tile.set_camera(cam, url)
+                # (2.2.8) زون‌های ذخیره‌شده را روی تایل نشان بده
+                try:
+                    tile.set_zones((cam or {}).get("regions") or [])
+                except Exception:
+                    pass
             else:
                 tile.clear()
 
