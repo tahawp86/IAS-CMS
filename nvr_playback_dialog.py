@@ -13,7 +13,7 @@ import cv2
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
+    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
 )
 
 from rtsp_utils import open_capture
@@ -122,12 +122,12 @@ class _PlaybackThread(QThread):
             )
 
 
-class NVRPlaybackDialog(QDialog):
-    def __init__(self, nvr: dict, channel, start_dt, end_dt, camera_label="", parent=None):
+class NVRPlaybackWidget(QWidget):
+    """ویجت پخش ویدیوی NVR (قابل جاسازی در دیالوگ یا کنسول مدیریت دوربین)."""
+
+    def __init__(self, nvr: dict, channel, start_dt, end_dt, camera_label="",
+                 parent=None):
         super().__init__(parent)
-        self.setWindowTitle("پخش ویدیوی NVR")
-        self.resize(760, 520)
-        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
 
         layout = QVBoxLayout(self)
 
@@ -156,9 +156,6 @@ class NVRPlaybackDialog(QDialog):
         self.web_btn.clicked.connect(self._open_nvr_web)
         self.web_btn.setVisible(False)
         btn_row.addWidget(self.web_btn)
-        close_btn = QPushButton("بستن")
-        close_btn.clicked.connect(self.reject)
-        btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
 
         # برای fallback وب
@@ -229,6 +226,39 @@ class NVRPlaybackDialog(QDialog):
                 self._thread.wait(3000)
         except Exception:
             pass
+
+    def stop(self):
+        """توقف ترد پخش (برای جاسازی در پنجره‌های دیگر)."""
+        self._stop_thread()
+
+
+class NVRPlaybackDialog(QDialog):
+    """دیالوگ مستقل پخش ویدیوی NVR (wrapper روی NVRPlaybackWidget)."""
+
+    def __init__(self, nvr: dict, channel, start_dt, end_dt, camera_label="",
+                 parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("پخش ویدیوی NVR")
+        self.resize(760, 520)
+        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        layout = QVBoxLayout(self)
+        self.widget = NVRPlaybackWidget(nvr, channel, start_dt, end_dt,
+                                        camera_label, self)
+        layout.addWidget(self.widget)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        close_btn = QPushButton("بستن")
+        close_btn.clicked.connect(self.reject)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+    # سازگاری با تست test_216_beta (الگوی توقف امن ترد)
+    @property
+    def _thread(self):
+        return self.widget._thread
+
+    def _stop_thread(self):
+        self.widget._stop_thread()
 
     def reject(self):
         self._stop_thread()

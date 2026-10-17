@@ -17,7 +17,6 @@ from PyQt6.QtWidgets import (
 
 from report_store import EVENT_TYPE_LABELS_FA
 from plate_store import plate_store
-from nvr_playback_dialog import NVRPlaybackDialog
 
 # چند ثانیه قبل/بعد از لحظه‌ی ثبت‌شده‌ی هر رویداد که برای پخش بازبینی از NVR
 # درخواست می‌شود - چون ساعت رویداد دقیقاً لحظه‌ی تشخیص در برنامه است، نه
@@ -368,7 +367,7 @@ class ReportsPage(QWidget):
             # هیچ NVR ای برای این دوربین پیدا نشود، با کلیک روی دکمه پیام
             # روشن نمایش داده می‌شود (نه اینکه از همان اول دکمه پنهان بماند).
             if self.camera_store is not None:
-                play_btn = QPushButton("▶ پخش از NVR")
+                play_btn = QPushButton("🎛️ کنسول دوربین")
                 play_btn.clicked.connect(
                     lambda _checked=False, _ts=ts, _nvr_id=nvr_id, _ch=channel, _cam=camera:
                     self._open_nvr_playback(_ts, _nvr_id, _ch, _cam)
@@ -380,6 +379,8 @@ class ReportsPage(QWidget):
         self.summary_label.setText(f"{self.table.rowCount()} ردیف یافت شد.")
 
     def _open_nvr_playback(self, ts, nvr_id, channel, camera_name):
+        # (2.2.7) به‌جای دیالوگ ساده‌ی پخش، «کنسول مدیریت دوربین» باز می‌شود
+        # (زنده + پخش ضبط‌شده + محدوده‌ها + شمارش + صدا + زوم + رویدادها).
         # اگر این ردیف گزارش از قبل nvr_id/channel نداشت (رویداد قدیمی یا
         # ثبت‌شده قبل از این ویژگی)، با نام دوربین در لیست فعلی دوربین‌ها/
         # NVRها می‌گردیم - رجوع کنید به توضیح بالای متد run_search.
@@ -388,31 +389,39 @@ class ReportsPage(QWidget):
             nvr_id = nvr_id or fallback_nvr_id
             channel = channel or fallback_channel
 
-        if not nvr_id or not channel:
-            QMessageBox.warning(
-                self, "خطا",
-                "برای این رویداد اطلاعات NVR/کانال ثبت نشده و دوربینی با همین نام هم "
-                "زیرمجموعه‌ی هیچ NVR ای در لیست «دوربین‌ها و NVRهای من» پیدا نشد؛ پخش "
-                "بازبینی از روی NVR برای این ردیف ممکن نیست (احتمالاً این دوربین مستقل "
-                "است یا نام آن تغییر کرده/حذف شده)."
-            )
-            return
+        nvr = self.camera_store.get_nvr(nvr_id) if nvr_id else None
 
-        nvr = self.camera_store.get_nvr(nvr_id)
-        if not nvr:
-            QMessageBox.warning(
-                self, "خطا",
-                "این NVR دیگر در لیست «دوربین‌ها و NVRهای من» وجود ندارد (احتمالاً حذف شده)."
-            )
-            return
+        # پیدا کردن رکورد دوربین برای کنسول (زنده/محدوده‌ها/صدا)
+        cam = None
         try:
-            event_dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
-        except (TypeError, ValueError):
-            QMessageBox.warning(self, "خطا", "ساعت این رویداد نامعتبر است.")
-            return
-        start_dt = event_dt - PLAYBACK_MARGIN_BEFORE
-        end_dt = event_dt + PLAYBACK_MARGIN_AFTER
-        dialog = NVRPlaybackDialog(nvr, channel, start_dt, end_dt, camera_label=camera_name, parent=self)
+            for c in self.camera_store.cameras:
+                if c.get("name") == camera_name:
+                    cam = c
+                    break
+        except Exception:
+            pass
+        if cam is None:
+            # حداقل یک رکورد ساختگی برای نمایش نام
+            cam = {"id": "", "name": camera_name}
+
+        start_dt = end_dt = None
+        if nvr and channel:
+            try:
+                event_dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+                start_dt = event_dt - PLAYBACK_MARGIN_BEFORE
+                end_dt = event_dt + PLAYBACK_MARGIN_AFTER
+            except (TypeError, ValueError):
+                nvr = None  # ساعت نامعتبر → فقط زنده
+
+        try:
+            from camera_console import CameraConsoleDialog
+            from report_store import report_store as _rs
+        except Exception:
+            _rs = None
+        dialog = CameraConsoleDialog(
+            cam, camera_store=self.camera_store, report_store=_rs,
+            nvr=nvr, channel=channel, start_dt=start_dt, end_dt=end_dt,
+            parent=self)
         dialog.exec()
 
     def export_csv(self):
