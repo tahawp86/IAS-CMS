@@ -147,10 +147,22 @@ class NVRPlaybackDialog(QDialog):
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
+        # (2.2.6) fallback وب: اگر پخش داخل برنامه ممکن نشد، پنل وب NVR
+        # را در مرورگر باز کن تا کاربر از آنجا بازه‌ی رویداد را پیدا کند.
+        self.web_btn = QPushButton("🌐 باز کردن پنل وب NVR")
+        self.web_btn.setToolTip(
+            "پنل وب NVR را در مرورگر باز می‌کند؛ از آنجا به بخش Playback\n"
+            "بروید و بازه‌ی زمانی رویداد را پیدا کنید.")
+        self.web_btn.clicked.connect(self._open_nvr_web)
+        self.web_btn.setVisible(False)
+        btn_row.addWidget(self.web_btn)
         close_btn = QPushButton("بستن")
         close_btn.clicked.connect(self.reject)
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
+
+        # برای fallback وب
+        self._nvr = dict(nvr) if nvr else {}
 
         candidates = build_playback_urls(nvr, channel, start_dt, end_dt)
         self._thread = _PlaybackThread(nvr, channel, start_dt, end_dt,
@@ -181,6 +193,25 @@ class NVRPlaybackDialog(QDialog):
     def _on_error(self, msg):
         self.video_label.setText(msg)
         self.status_label.setText("")
+        # پخش داخل برنامه ممکن نشد — دکمه‌ی fallback وب را نشان بده
+        self.web_btn.setVisible(True)
+
+    def _open_nvr_web(self):
+        """باز کردن پنل وب NVR در مرورگر (fallback وقتی پخش RTSP ممکن نیست)."""
+        import webbrowser
+        ip = (self._nvr.get("ip") or "").strip()
+        if not ip:
+            return
+        # پورت HTTP معمولاً همان پورت ONVIF (پیش‌فرض 80) است
+        try:
+            port = int(self._nvr.get("onvif_port") or 80)
+        except (TypeError, ValueError):
+            port = 80
+        url = f"http://{ip}:{port}" if port != 80 else f"http://{ip}"
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
 
     def _stop_thread(self):
         """(2.0.16-beta - پایداری) توقف امن ترد پخش هنگام بسته شدن دیالوگ.
