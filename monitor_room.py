@@ -65,6 +65,8 @@ class MonitorWindow(QMainWindow):
     CameraPageWidget (همان صفحه‌ی مرکزی پنجره‌ی اصلی) استفاده می‌کند —
     single source of truth؛ ظاهر، چیدمان و همه‌ی دکمه‌ها دقیقاً مثل
     صفحه‌ی اصلی و همه درست کار می‌کنند.
+    (2.2.10) پنل‌های کناری هم اضافه شد: چپ (LeftPanelWidget) + وسط
+    (CameraPageWidget) + راست (RightPanelWidget) — کل لایه‌ی صفحه‌ی اصلی.
     """
 
     def __init__(self, title="اتاق مانیتورینگ", parent=None, main_window=None):
@@ -75,14 +77,29 @@ class MonitorWindow(QMainWindow):
         self._mon_index = 0
 
         from camera_page import CameraPageWidget
+        from side_panels import LeftPanelWidget, RightPanelWidget
+        from PyQt6.QtWidgets import QSplitter
+
+        self.left_panel = LeftPanelWidget(self._main, self)
+        self.left_panel.setMaximumWidth(230)
         self.camera_page = CameraPageWidget(self._main, self)
         # دکمه‌ی سایدبار در پنجره‌ی نما معنا ندارد — مخفی‌اش می‌کنیم
         try:
             self.camera_page.sidebar_toggle_btn.setVisible(False)
         except Exception:
             pass
-        self.setCentralWidget(self.camera_page)
-        self.resize(960, 600)
+        self.right_panel = RightPanelWidget(self._main, self)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(self.left_panel)
+        splitter.addWidget(self.camera_page)
+        splitter.addWidget(self.right_panel)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 7)
+        splitter.setStretchFactor(2, 0)
+        self._splitter = splitter
+        self.setCentralWidget(splitter)
+        self.resize(1280, 700)
 
     @property
     def camera_grid(self):

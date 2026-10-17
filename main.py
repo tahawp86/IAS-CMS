@@ -2550,6 +2550,72 @@ class MainWindow(QMainWindow):
         for panel in self.fire_alarm_store.panels:
             self._start_fire_alarm_monitor(panel)
 
+
+
+    def _insert_event_item(self, item):
+        """(2.2.10) درج رویداد در پنل اصلی + کلون در پنل نماها."""
+        from PyQt6.QtWidgets import QListWidgetItem
+        from PyQt6.QtCore import Qt
+        self.events_panel_list.insertItem(0, item)
+        # کلون برای پنجره‌های نما
+        try:
+            mgr = getattr(self, 'monitor_room_manager', None)
+            if mgr:
+                for w in getattr(mgr, 'windows', []):
+                    try:
+                        rp = getattr(w, 'right_panel', None)
+                        if rp is None:
+                            continue
+                        pl = rp.events_panel_list
+                        clone = QListWidgetItem(item.text())
+                        try:
+                            clone.setIcon(item.icon())
+                        except Exception:
+                            pass
+                        try:
+                            d = item.data(Qt.ItemDataRole.UserRole)
+                            if d is not None:
+                                clone.setData(Qt.ItemDataRole.UserRole, d)
+                        except Exception:
+                            pass
+                        # رنگ متن قرمز برای هشدارها
+                        try:
+                            clone.setForeground(item.foreground())
+                        except Exception:
+                            pass
+                        pl.insertItem(0, clone)
+                        while pl.count() > 300:
+                            pl.takeItem(pl.count() - 1)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _reload_all_camera_lists(self, exclude=None):
+        """(2.2.10) بازخوانی لیست دوربین‌ها در همه‌ی پنجره‌ها (اصلی + نماها)."""
+        panels = [self.left_panel]
+        try:
+            mgr = getattr(self, 'monitor_room_manager', None)
+            if mgr:
+                for w in getattr(mgr, 'windows', []):
+                    try:
+                        lp = getattr(w, 'left_panel', None)
+                        if lp is not None and lp is not exclude:
+                            panels.append(lp)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        for p in panels:
+            if p is exclude:
+                continue
+            try:
+                # صدا زدن مستقیم متد ویجت (نه delegate) تا حلقه بی‌نهایت نشود
+                from side_panels import LeftPanelWidget
+                LeftPanelWidget.reload_camera_list(p)
+            except Exception:
+                pass
+
     def _apply_license_title(self):
         """به‌روزرسانی عنوان پنجره بر اساس وضعیت فعلی لایسنس."""
         try:
@@ -2709,103 +2775,21 @@ class MainWindow(QMainWindow):
         main_widget = QWidget()
         main_layout = QVBoxLayout()
 
-        left_panel = QVBoxLayout()
-
-        # رفع درخواست: کادر یوزرنیم/پسورد بالای پنل اسکن شبکه. این مقادیر فقط
-        # در حافظه نگه‌داشته می‌شوند (هیچ‌جا روی دیسک ذخیره نمی‌شوند) و برای
-        # اتصال به دستگاه‌های یافت‌شده در اسکن شبکه (چه برای تشخیص خودکار نوع
-        # دستگاه، چه برای پرشدن خودکار فیلد یوزرنیم/پسورد دیالوگ افزودن
-        # دوربین/NVR) استفاده می‌شوند. با بستن برنامه (closeEvent) پاک می‌شوند.
-        scan_cred_group = QGroupBox("اطلاعات ورود برای اتصال به دوربین‌ها")
-        scan_cred_layout = QVBoxLayout()
-        self.scan_user_input = QLineEdit("admin")
-        self.scan_user_input.setPlaceholderText("نام کاربری")
-        self.scan_pass_input = QLineEdit()
-        self.scan_pass_input.setPlaceholderText("رمز عبور")
-        self.scan_pass_input.setEchoMode(QLineEdit.EchoMode.Password)
-        scan_cred_layout.addWidget(self.scan_user_input)
-        scan_cred_layout.addWidget(self.scan_pass_input)
-        scan_cred_group.setLayout(scan_cred_layout)
-        left_panel.addWidget(scan_cred_group)
-
-        # بخش اسکن شبکه
-        # نکته: قبلاً این بخش «اسکن دستگاه‌های مداربسته» نام داشت و صرفاً پورت‌های
-        # باز را نشان می‌داد؛ چون این اسکن صرفاً یک اسکن عمومی شبکه (پورت‌های باز
-        # روی هر IP) است - نه اسکن اختصاصی دوربین - عنوان و متن دکمه به «اسکن
-        # شبکه» تغییر کرد تا با واقعیت عملکرد آن هم‌خوانی داشته باشد. همچنین حالا
-        # با دابل‌کلیک روی هر نتیجه، کاربر مشخص می‌کند دستگاه یک دوربین تکی است یا
-        # یک NVR؛ در صورت انتخاب NVR، مستقیماً دیالوگ افزودن NVR با IP از پیش
-        # پرشده باز می‌شود و کانال‌ها/دوربین‌های متصل به آن پس از افزودن، به‌صورت
-        # زیرمنو (زیرشاخه‌ی درختی) زیر همان NVR در پنل «دوربین‌ها و NVRهای من»
-        # نمایش داده می‌شوند (رجوع کنید به reload_camera_list).
-        scan_group = QGroupBox("اسکن شبکه (Network Scan)")
-        scan_layout = QVBoxLayout()
-        self.subnet_input = QLineEdit("192.168.1")
-        self.subnet_input.setPlaceholderText(
-            "رنج IP؛ مثلاً: 192.168.1 یا 192.168.1.20-192.168.1.80 یا 192.168.2.0/24")
-        self.subnet_input.setToolTip(
-            "رنج IP برای اسکن شبکه.\n"
-            "قالب‌ها: «192.168.1» (کل ساب‌نت)، «192.168.1.20-192.168.1.80»،\n"
-            "«192.168.1.20-80»، «192.168.2.0/24»؛ چند رنج با ویرگول جدا شود.")
-        self.scan_btn = QPushButton("اسکن شبکه")
-        self.scan_btn.clicked.connect(self.run_network_scan)
-        self.scan_result_list = QListWidget()
-        # رفع درخواست: به‌جای نگه‌داشتن Ctrl/Shift هنگام کلیک برای انتخاب چندتایی،
-        # کنار هر دستگاه یک چک‌باکس نمایش داده می‌شود (هنگام افزودن آیتم‌ها در
-        # _on_network_scan_finished تنظیم می‌شود) و کاربر با تیک زدن آن‌ها،
-        # دستگاه‌های موردنظر برای اتصال را مشخص می‌کند. دابل‌کلیک همچنان برای
-        # افزودن سریع یک دستگاه تکی کار می‌کند.
-        self.scan_result_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
-        self.scan_result_list.itemDoubleClicked.connect(self.on_scan_result_selected)
-        self.add_selected_scan_btn = QPushButton("+ افزودن دستگاه‌های انتخاب‌شده")
-        self.add_selected_scan_btn.clicked.connect(self.on_add_selected_scan_results)
-        self.detect_status_label = QLabel("")
-        self.detect_status_label.setStyleSheet("color: #aaaaaa; font-size: 11px;")
-        scan_layout.addWidget(self.subnet_input)
-        scan_layout.addWidget(self.scan_btn)
-        # نکته: دیگر از کاربر پرسیده نمی‌شود دستگاه دوربین تکی است یا NVR؛ با
-        # دابل‌کلیک، نوع دستگاه به‌صورت خودکار تشخیص داده می‌شود (device_detect.py).
-        scan_layout.addWidget(self.scan_result_list)
-        scan_layout.addWidget(self.add_selected_scan_btn)
-        scan_layout.addWidget(self.detect_status_label)
-        scan_group.setLayout(scan_layout)
-        left_panel.addWidget(scan_group)
-
-        # بخش لیست دوربین‌ها و NVRهای من (با نام دلخواه)
-        cam_group = QGroupBox("دوربین‌ها و NVRهای من")
-        cam_layout = QVBoxLayout()
-        add_btn_row = QHBoxLayout()
-        self.add_camera_btn = QPushButton("افزودن دوربین")
-        self.add_camera_btn.clicked.connect(lambda: self.open_add_camera_dialog())
-        self.add_nvr_btn = QPushButton("افزودن NVR")
-        # نکته: چون open_add_nvr_dialog اکنون یک آرگومان اختیاری (prefill_ip)
-        # دارد، باید مثل add_camera_btn از طریق lambda وصل شود؛ در غیر این
-        # صورت PyQt مقدار bool سیگنال clicked(checked) را به‌جای None به
-        # prefill_ip پاس می‌دهد و IP به‌اشتباه با True/False پر می‌شود.
-        self.add_nvr_btn.clicked.connect(lambda: self.open_add_nvr_dialog())
-        add_btn_row.addWidget(self.add_camera_btn, 1)
-        add_btn_row.addWidget(self.add_nvr_btn, 1)
-        # (2.0.58-beta به دستور کاربر) دکمه‌ی «تست پایداری شبکه» از ردیف
-        # دکمه‌های افزودن جدا شد و زیر پنل «دوربین‌ها و NVRهای من» قرار گرفت،
-        # تا دو دکمه‌ی افزودن دوربین/NVR کنار هم با برچسب کامل جا شوند.
-        self.net_probe_btn = QPushButton("📶 تست پایداری شبکه")
-        self.net_probe_btn.setToolTip(
-            "اسکن پهنای باند و تاخیر شبکه‌ی همه‌ی دوربین‌ها (چند ثانیه طول می‌کشد)")
-        self.net_probe_btn.clicked.connect(self._on_network_probe_clicked)
-        # دوربین‌های متصل به یک NVR به‌صورت زیرمجموعه‌ی همان NVR نمایش داده می‌شوند.
-        self.camera_list = CameraTreeWidget()
-        self.camera_list.setHeaderHidden(True)
-        self.camera_list.itemDoubleClicked.connect(self.on_camera_item_activated)
-        self.camera_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.camera_list.customContextMenuRequested.connect(self.show_camera_context_menu)
-        connect_hint = QLabel("برای پخش زنده روی یک دوربین/کانال دابل‌کلیک کنید. کلیک راست: ویرایش/حذف/بازخوانی کانال‌ها")
-        connect_hint.setStyleSheet("color: #888; font-size: 10px;")
-        cam_layout.addLayout(add_btn_row)
-        cam_layout.addWidget(self.camera_list)
-        cam_layout.addWidget(connect_hint)
-        cam_group.setLayout(cam_layout)
-        left_panel.addWidget(cam_group)
-        left_panel.addWidget(self.net_probe_btn)
+        # (2.2.10) پنل چپ به LeftPanelWidget استخراج شد — single source of truth
+        from side_panels import LeftPanelWidget, RightPanelWidget
+        self.left_panel = LeftPanelWidget(self)
+        # سازگاری: ارجاع‌های self.xxx در بقیه‌ی متدهای MainWindow
+        self.scan_user_input = self.left_panel.scan_user_input
+        self.scan_pass_input = self.left_panel.scan_pass_input
+        self.subnet_input = self.left_panel.subnet_input
+        self.scan_btn = self.left_panel.scan_btn
+        self.scan_result_list = self.left_panel.scan_result_list
+        self.add_selected_scan_btn = self.left_panel.add_selected_scan_btn
+        self.detect_status_label = self.left_panel.detect_status_label
+        self.add_camera_btn = self.left_panel.add_camera_btn
+        self.add_nvr_btn = self.left_panel.add_nvr_btn
+        self.net_probe_btn = self.left_panel.net_probe_btn
+        self.camera_list = self.left_panel.camera_list
 
         # «🔥 اعلام حریق»، «👤 چهره‌ها» و «📊 گزارش‌ها» دیگر در پنل چپ
         # نیستند؛ هرکدام صفحه‌ی جداگانه‌ی خودشان را دارند و از هدر بالای
@@ -2833,89 +2817,15 @@ class MainWindow(QMainWindow):
         self.sidebar_toggle_btn = self.camera_page.sidebar_toggle_btn
         grid_column.addWidget(self.camera_page)
 
-        # ------------------------------------------------ ستون راست: پنل
-        # رویدادها (2.0.56-beta به دستور کاربر: تبدیل «پنل تشخیص چهره» به
-        # «پنل رویدادها»). این پنل رویدادهای مهم سیستم را نشان می‌دهد:
-        # تخلفات پلاک‌خوان (از جمله «⛔ ورود غیرمجاز» برای پلاک‌های لیست
-        # سیاه) و هشدارهای «ورود به محدوده». رویدادهای شناسایی چهره دیگر
-        # این‌جا نمایش داده نمی‌شوند (در صفحه‌ی «چهره‌ها» و گزارش‌ها هستند)
-        # ولی برای گالری «دیدن تصاویر» در حافظه نگه داشته می‌شوند.
-        events_panel_group = QGroupBox("🚨 پنل رویدادها")
-        events_panel_layout = QVBoxLayout()
-        # دکمه‌ی «🖼 دیدن تصاویر»: گالری چهره‌های تشخیص‌داده‌شده (تاریخچه‌ی
-        # همین نشست، از حافظه — نه از لیست پنل).
-        gallery_btn = QPushButton("🖼 دیدن تصاویر")
-        gallery_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        gallery_btn.clicked.connect(self.open_face_gallery)
-        events_panel_layout.addWidget(gallery_btn)
-        self.events_panel_list = QListWidget()
-        self.events_panel_list.setIconSize(QSize(64, 64))
-        self.events_panel_list.setWordWrap(True)
-        # (1.0.0) دبل‌کلیک روی رویداد: نمایش تصویر با جزئیات کامل
-        self.events_panel_list.itemDoubleClicked.connect(
-            self._on_event_item_double_clicked)
-        events_panel_layout.addWidget(self.events_panel_list)
-        events_panel_group.setLayout(events_panel_layout)
-        # تاریخچه‌ی چهره‌های این نشست برای گالری + شناسه‌ی تخلفات پلاکی که
-        # قبلاً در پنل نمایش داده شده‌اند (جلوگیری از تکرار).
-        self._recent_face_events = []
-        self._shown_violation_ids = set()
-        # (2.0.61-beta) هشدار قطع تصویر: آخرین زمان هشدار هر دوربین
-        # (کول‌داون ضداسپم) + مجموعه‌ی دوربین‌هایی که الان قطع‌اند.
-        self._video_loss_alerted = {}
-        self._video_loss_down = set()
-
-        # پنل «هشدارهای حریق و دود» - رفع درخواست «سیستم تشخیص دود و اعلام
-        # حریق»: هم رویدادهای تشخیص تصویری (fire_smoke_detector.py روی هر
-        # دوربین) و هم هشدارهای دریافتی از پنل‌های فیزیکی (fire_alarm_io.py)
-        # در همین‌جا (و هم‌زمان در «گزارش‌ها») ثبت می‌شوند - جدا از پنل
-        # تشخیص چهره‌ی بالا تا با آن قاطی نشود.
-        fire_panel_group = QGroupBox("🔥 هشدارهای حریق و دود")
-        self.fire_panel_group = fire_panel_group  # برای نمایش/مخفی‌شدن خودکار
-        fire_panel_layout = QVBoxLayout()
-        self.fire_panel_list = QListWidget()
-        self.fire_panel_list.setIconSize(QSize(64, 64))
-        self.fire_panel_list.setWordWrap(True)
-        fire_panel_layout.addWidget(self.fire_panel_list)
-        # رفع درخواست «اتصال به سیستم اعلام حریق ساختمان + صدای هشدار»:
-        # دکمه‌ی قطع صدای آژیر + دکمه‌ی تنظیمات اتصال ساختمان زیر لیست حریق.
-        fire_btn_row = QHBoxLayout()
-        self.btn_stop_alarm = QPushButton("🔇 قطع صدای هشدار")
-        self.btn_stop_alarm.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_stop_alarm.clicked.connect(self.stop_fire_alarm_sound)
-        self.btn_building_fire = QPushButton("🏢 اتصال به سیستم حریق ساختمان")
-        self.btn_building_fire.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_building_fire.clicked.connect(self.open_building_fire_settings)
-        fire_btn_row.addWidget(self.btn_stop_alarm)
-        fire_btn_row.addWidget(self.btn_building_fire)
-        fire_panel_layout.addLayout(fire_btn_row)
-        fire_panel_group.setLayout(fire_panel_layout)
-
-        # رفع درخواست «تنظیم اندازه پنل‌های سمت راست»: به‌جای QVBoxLayout با
-        # ضریب کشش ثابت (که با توجه به حداقل‌اندازه‌ی متفاوت دو QGroupBox
-        # همیشه دقیقاً به همان نسبت ۳:۲ در نمی‌آمد و کاربر هم راهی برای
-        # تغییرش نداشت)، از یک QSplitter عمودی استفاده می‌شود: هم نسبت
-        # اولیه‌ی مشخص (۶۰٪/۴۰٪) دارد، هم کاربر می‌تواند با کشیدن لبه‌ی بین
-        # دو پنل، اندازه‌ی هرکدام را دستی تنظیم کند، و هم حداقل ارتفاعی
-        # (setMinimumHeight) دارند که هیچ‌کدام کاملاً جمع نشوند.
-        events_panel_group.setMinimumHeight(120)
-        fire_panel_group.setMinimumHeight(120)
-        # (1.0.0) پنل PTZ: زیر پنل رویدادها، به‌جای پنجره‌ی جدا
-        from ptz_panel import PTZPanel
-        self.ptz_panel_group = QGroupBox("🎮 کنترل PTZ")
-        _ptz_lay = QVBoxLayout()
-        self.ptz_panel = PTZPanel()
-        _ptz_lay.addWidget(self.ptz_panel)
-        self.ptz_panel_group.setLayout(_ptz_lay)
-        self.ptz_panel_group.setMinimumHeight(150)
-        self.ptz_panel_group.setVisible(False)  # پیش‌فرض مخفی
-        self.right_splitter = QSplitter(Qt.Orientation.Vertical)
-        self.right_splitter.addWidget(events_panel_group)
-        self.right_splitter.addWidget(self.ptz_panel_group)
-        self.right_splitter.addWidget(fire_panel_group)
-        self.right_splitter.setStretchFactor(0, 3)
-        self.right_splitter.setStretchFactor(1, 2)
-        self.right_splitter.setStretchFactor(2, 2)
+        # (2.2.10) پنل راست به RightPanelWidget استخراج شد — single source of truth
+        self.right_panel = RightPanelWidget(self)
+        # سازگاری
+        self.events_panel_list = self.right_panel.events_panel_list
+        self.fire_panel_list = self.right_panel.fire_panel_list
+        self.fire_panel_group = self.right_panel.fire_panel_group
+        self.ptz_panel_group = self.right_panel.ptz_panel_group
+        self.ptz_panel = self.right_panel.ptz_panel
+        self.right_splitter = self.right_panel.right_splitter
 
         # رفع درخواست: عرض پنل سمت راست (پنل رویدادها) باید دقیقاً هم‌اندازه‌ی
         # پنل سمت چپ باشد تا فضای بیشتری به تصویر دوربین‌ها در وسط برسد. قبلاً
@@ -2928,8 +2838,8 @@ class MainWindow(QMainWindow):
         # رفع درخواست: پنل سمت چپ کوچکتر شده (عرض ثابت و محدودتر به‌جای سهم
         # کشیدنی از splitter) و یک دکمه‌ی sidebar اضافه شده که با کلیک روی آن
         # کل پنل چپ باز/بسته می‌شود (toggle_sidebar).
-        self.left_widget = QWidget()
-        self.left_widget.setLayout(left_panel)
+        # (2.2.10) left_panel حالا خودِ LeftPanelWidget است
+        self.left_widget = self.left_panel
         self.left_widget.setMaximumWidth(230)
         grid_widget = QWidget()
         grid_widget.setLayout(grid_column)
@@ -3100,7 +3010,7 @@ class MainWindow(QMainWindow):
                 item.setForeground(QColor(color))
                 # ذخیره‌ی داده‌ی رویداد برای دبل‌کلیک
                 item.setData(Qt.ItemDataRole.UserRole, ev)
-                self.events_panel_list.insertItem(0, item)
+                self._insert_event_item(item)
             # سقف ۳۰۰
             while self.events_panel_list.count() > 300:
                 self.events_panel_list.takeItem(self.events_panel_list.count() - 1)
@@ -3122,30 +3032,22 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _refresh_fire_panel_visibility(self):
-        """رفع درخواست: پنل «هشدارهای حریق و دود» در صفحه‌ی اصلی فقط وقتی
-        دیده می‌شود که حداقل یک دوربین «تشخیص حریق» فعال داشته باشد؛ با
-        فعال/غیرفعال شدن تیک حریق هر دوربین یا افزودن/حذف دوربین، پنل خودکار
-        ظاهر/مخفی می‌شود."""
+    def _refresh_fire_panel_visibility(self, *args, **kwargs):
+        """(2.2.10) به‌روزرسانی دیدن پنل حریق در همه‌ی پنجره‌ها."""
         try:
-            store = getattr(self, "camera_store", None)
-            cams = list(getattr(store, "cameras", None) or [])
-            any_fire = any(bool(c.get("fire_detection")) for c in cams)
+            self.right_panel._refresh_fire_panel_visibility(*args, **kwargs)
         except Exception:
-            any_fire = False
-        panel = getattr(self, "fire_panel_group", None)
-        if panel is None:
-            return
-        want_visible = bool(any_fire)
-        # نکته: isVisible() زنجیره‌ی والدها را هم چک می‌کند و قبل از
-        # show() شدن پنجره همیشه False است؛ برای مقایسه‌ی «وضعیتِ خواسته‌شده»
-        # باید پرچم صریح خودِ ویجت (isHidden) را خواند، وگرنه در startup
-        # هیچ‌وقت مخفی نمی‌شود.
-        if panel.isHidden() == (not want_visible):
-            return
-        # (2.0.12-beta: مثل action #207 - فقط مخفی/نمایان ساده، بدون
-        # ذخیره/بازیابی اندازه‌ی splitter.)
-        panel.setVisible(want_visible)
+            pass
+        try:
+            mgr = getattr(self, 'monitor_room_manager', None)
+            if mgr:
+                for w in getattr(mgr, 'windows', []):
+                    try:
+                        w.right_panel._refresh_fire_panel_visibility(*args, **kwargs)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     def toggle_sidebar(self):
         """رفع درخواست: نمایش/مخفی‌کردن پنل کناری سمت چپ با کلیک روی دکمه‌ی
@@ -3230,7 +3132,7 @@ class MainWindow(QMainWindow):
         text = f"[{timestamp}] {camera_name}\n⚠ ورود به محدوده {label}"
         item = QListWidgetItem(text)
         item.setForeground(QColor("#e74c3c"))
-        self.events_panel_list.insertItem(0, item)
+        self._insert_event_item(item)
         # رفع درخواست: علاوه بر نمایش موقت در همین پنل، ثبت دائمی روی سیستم
         # (report_store.py) - قابل جست‌وجو/خروجی از دیالوگ «گزارش‌ها».
         # (1.0.0) عکس هم ثبت می‌شود.
@@ -3248,7 +3150,7 @@ class MainWindow(QMainWindow):
             timestamp = time.strftime("%H:%M:%S")
             item = QListWidgetItem(f"[{timestamp}] {text}")
             item.setForeground(QColor(color))
-            self.events_panel_list.insertItem(0, item)
+            self._insert_event_item(item)
             while self.events_panel_list.count() > 300:
                 self.events_panel_list.takeItem(self.events_panel_list.count() - 1)
         except Exception:
@@ -3420,26 +3322,9 @@ class MainWindow(QMainWindow):
         return f"  {icon}{q}", (color, tip)
 
     # (2.0.15-beta) اسکن پهنای باند/پایداری شبکه‌ی دوربین‌ها
-    def _on_network_probe_clicked(self):
-        """شروع اسکن پایداری شبکه‌ی همه‌ی دوربین‌ها در ترد پس‌زمینه (رابط
-        قفل نمی‌شود)."""
-        if getattr(self, "_net_probe_thread", None) is not None:
-            return  # اسکن در حال اجراست
-        cams = list(self.camera_store.cameras)
-        if not cams:
-            QMessageBox.information(self, "تست پایداری شبکه",
-                                    "هنوز دوربینی ثبت نشده است.")
-            return
-        # نکته: اگر رمز دوربینی در حافظه نباشد (ذخیره‌ی امن خاموش و هنوز
-        # وارد نشده)، نمونه‌گیری استریمش «نامشخص» می‌شود ولی تاخیر TCP
-        # همچنان اندازه‌گیری می‌شود.
-        from network_probe import NetworkProbeThread
-        self._net_probe_thread = NetworkProbeThread(cams, self)
-        self._net_probe_thread.probe_done.connect(self._on_probe_done)
-        self._net_probe_thread.finished.connect(self._on_probe_finished)
-        self.net_probe_btn.setEnabled(False)
-        self.net_probe_btn.setText("📶 در حال اسکن...")
-        self._net_probe_thread.start()
+    def _on_network_probe_clicked(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, '_on_network_probe_clicked')(*args, **kwargs)
 
     def _on_probe_done(self, cam_id, res):
         cam = self.camera_store.get_camera(cam_id)
@@ -3470,79 +3355,21 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _make_camera_tree_item(self, cam):
-        """(2.0.61-beta) ساخت آیتم درختی یک دوربین (مستقل یا کانال NVR) —
-        بدون افزودن به والد؛ برای استفاده‌ی مشترک در حالت گروه‌دار/بدون‌گروه."""
-        # رفع درخواست: در صورت شناسایی IP واقعی دوربین شبکه‌ای پشت این
-        # کانال (متفاوت از IP خود NVR)، جلوی نام کانال هم نمایش داده می‌شود.
-        cam_label = cam["name"]
-        if cam.get("camera_ip"):
-            cam_label += f"  ({cam['camera_ip']})"
-        badge, style = self._net_badge(cam)
-        cam_item = QTreeWidgetItem([cam_label + badge])
-        if style:
-            cam_item.setForeground(0, QColor(style[0]))
-            cam_item.setToolTip(0, style[1])
-        cam_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "camera", "id": cam["id"]})
-        return cam_item
+    def _make_camera_tree_item(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, '_make_camera_tree_item')(*args, **kwargs)
 
-    def _make_nvr_tree_item(self, nvr):
-        """(2.0.61-beta) ساخت آیتم درختی یک NVR همراه با کانال‌هایش."""
-        channel_count = len(self.camera_store.cameras_for_nvr(nvr["id"]))
-        nvr_item = QTreeWidgetItem([f"🖥 {nvr['name']}  ({nvr['ip']}) — {channel_count} کانال"])
-        nvr_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "nvr", "id": nvr["id"]})
-        for cam in self.camera_store.cameras_for_nvr(nvr["id"]):
-            nvr_item.addChild(self._make_camera_tree_item(cam))
-        nvr_item.setExpanded(True)
-        return nvr_item
+    def _make_nvr_tree_item(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, '_make_nvr_tree_item')(*args, **kwargs)
 
-    def reload_camera_list(self):
-        self.camera_list.clear()
-        # پنل «هشدارهای حریق و دود» فقط وقتی دیده می‌شود که حداقل یک دوربین
-        # تشخیص حریق فعال داشته باشد (با افزودن/حذف/ویرایش دوربین تازه می‌شود).
-        self._refresh_fire_panel_visibility()
+    def reload_camera_list(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, 'reload_camera_list')(*args, **kwargs)
 
-        def _group_of(x):
-            return (x.get("group") or "").strip()
-
-        def _add_item(item, parent):
-            if parent is None:
-                self.camera_list.addTopLevelItem(item)
-            else:
-                parent.addChild(item)
-
-        # (2.0.61-beta) گروه‌بندی: هر گروه یک پوشه‌ی 📁 در سطح بالا می‌گیرد؛
-        # کانال‌های NVR مثل قبل زیر NVR خودشان می‌مانند. آیتم‌های بدون گروه
-        # دقیقاً مثل قبل در سطح بالا نمایش داده می‌شوند.
-        groups = self.camera_store.get_groups()
-        for g in groups:
-            folder = QTreeWidgetItem([f"📁 {g}"])
-            folder.setData(0, Qt.ItemDataRole.UserRole, {"type": "group", "name": g})
-            self.camera_list.addTopLevelItem(folder)
-            for nvr in self.camera_store.nvrs:
-                if _group_of(nvr) == g:
-                    _add_item(self._make_nvr_tree_item(nvr), folder)
-            for cam in self.camera_store.standalone_cameras():
-                if _group_of(cam) == g:
-                    _add_item(self._make_camera_tree_item(cam), folder)
-            folder.setExpanded(True)
-
-        # NVRهای بدون گروه — مثل قبل در سطح بالا.
-        for nvr in self.camera_store.nvrs:
-            if not _group_of(nvr):
-                _add_item(self._make_nvr_tree_item(nvr), None)
-
-        # دوربین‌های مستقل (بدون NVR) و بدون گروه — مثل قبل در سطح بالا.
-        for cam in self.camera_store.standalone_cameras():
-            if not _group_of(cam):
-                _add_item(self._make_camera_tree_item(cam), None)
-
-    def _scan_credentials(self):
-        """رفع درخواست: نام‌کاربری/رمز کادر بالای پنل اسکن شبکه را برمی‌گرداند
-        (این مقادیر هرگز روی دیسک ذخیره نمی‌شوند - فقط در حافظه‌ی همین کادر)."""
-        user = self.scan_user_input.text().strip() or "admin"
-        pwd = self.scan_pass_input.text()
-        return user, pwd
+    def _scan_credentials(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, '_scan_credentials')(*args, **kwargs)
 
     def _auto_display_camera(self, cam) -> bool:
         """رفع درخواست: بعد از افزوده‌شدن هر دوربین، به‌صورت خودکار در اولین
@@ -3554,93 +3381,13 @@ class MainWindow(QMainWindow):
         rtsp_url = self.camera_store.build_rtsp_url(cam)
         return self.camera_grid.assign_camera(cam, rtsp_url)
 
-    def open_add_camera_dialog(self, prefill_ip=None, detected_path=None, detected_full_url=None,
-                                prefill_user=None, prefill_pass=None):
-        # گیت سهمیه‌ی «تعداد کل دوربین‌ها»
-        try:
-            from admin_quota import check_quota, quota_denied_message
-            allowed, used, quota = check_quota("cameras", self.camera_store)
-            if not allowed:
-                QMessageBox.warning(
-                    self, "قابلیت غیرفعال" if quota == -1 else "سهمیه تکمیل است",
-                    quota_denied_message("cameras", used, quota))
-                return
-        except Exception:
-            pass
-        dialog = AddCameraDialog(self)
-        if prefill_ip:
-            dialog.ip_input.setText(prefill_ip)
-        if prefill_user is not None:
-            dialog.user_input.setText(prefill_user)
-        if prefill_pass is not None:
-            dialog.pass_input.setText(prefill_pass)
-        if detected_path is not None or detected_full_url is not None:
-            dialog.set_detected_stream(path=detected_path, full_url=detected_full_url)
-        if dialog.exec():
-            data = dialog.get_camera_data()
-            cam = self.camera_store.add_camera(
-                data["name"], data["ip"], data["port"], data["user"], data["pass"], data["path"],
-                full_url=data.get("full_url"),
-                floor_id=data.get("floor_id", ""),
-                group=data.get("group", ""),
-                bitrate_kbps=data.get("bitrate_kbps", 0),
-            )
-            self.reload_camera_list()
-            # (2.0.68-beta) شناسایی خودکار PTZ/لنز موتورایزد در پس‌زمینه
-            self._autodetect_ptz_async(cam["id"])
-            # رفع درخواست: دوربین تازه‌اضافه‌شده اتوماتیک به پنجره‌ی نمایش اضافه شود.
-            self.open_live_view(cam)
+    def open_add_camera_dialog(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, 'open_add_camera_dialog')(*args, **kwargs)
 
-    def open_add_nvr_dialog(self, prefill_ip=None, detected_brand=None, detected_onvif_port=None,
-                             prefill_user=None, prefill_pass=None):
-        dialog = AddNVRDialog(self)
-        if prefill_ip:
-            dialog.ip_input.setText(prefill_ip)
-        if prefill_user is not None:
-            dialog.user_input.setText(prefill_user)
-        if prefill_pass is not None:
-            dialog.pass_input.setText(prefill_pass)
-        if detected_brand:
-            dialog.set_detected_brand(brand=detected_brand, onvif_port=detected_onvif_port)
-        if dialog.exec():
-            data = dialog.get_nvr_data()
-            # گیت سهمیه‌ی «تعداد کل دوربین‌ها» برای کانال‌های انتخاب‌شده‌ی NVR
-            try:
-                from admin_quota import check_quota, quota_denied_message
-                n_channels = len(dialog.get_selected_channels())
-                allowed, used, quota = check_quota("cameras", self.camera_store,
-                                                   count=n_channels)
-                if not allowed:
-                    QMessageBox.warning(
-                        self,
-                        "قابلیت غیرفعال" if quota == -1 else "سهمیه تکمیل است",
-                        quota_denied_message("cameras", used, quota)
-                        + f"\nکانال‌های انتخاب‌شده: {n_channels}")
-                    return
-            except Exception:
-                pass
-            nvr = self.camera_store.add_nvr(
-                name=data["name"], ip=data["ip"], rtsp_port=data["rtsp_port"],
-                onvif_port=data["onvif_port"], user=data["user"],
-                pwd=data["pass"], brand=data["brand"],
-                camera_brand=data["camera_brand"],
-                group=data.get("group", ""),
-            )
-            added_cams = [
-                self._add_channel_from_entry(nvr, entry, default_name)
-                for entry, default_name in dialog.get_selected_channels()
-            ]
-            self.reload_camera_list()
-            # رفع درخواست: هر کانال تازه‌اضافه‌شده اتوماتیک به پنجره‌ی نمایش اضافه شود.
-            not_shown = sum(1 for cam in added_cams if not self._auto_display_camera(cam))
-            msg = f"NVR «{nvr['name']}» با {len(added_cams)} کانال اضافه شد."
-            if not_shown:
-                msg += (
-                    f"\n{not_shown} کانال به دلیل پر بودن شبکه‌ی نمایش به‌صورت خودکار باز "
-                    "نشدند؛ برای باز کردن آن‌ها، تعداد نمایش هم‌زمان را افزایش دهید یا "
-                    "روی آن‌ها در لیست دابل‌کلیک کنید."
-                )
-            QMessageBox.information(self, "NVR اضافه شد", msg)
+    def open_add_nvr_dialog(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, 'open_add_nvr_dialog')(*args, **kwargs)
 
     def _add_channel_from_entry(self, nvr, entry, default_name):
         camera_ip = entry.get("camera_ip") or ""
@@ -3664,39 +3411,9 @@ class MainWindow(QMainWindow):
             nvr, entry["channel"], default_name, path=entry["path_or_url"], camera_ip=camera_ip,
         )
 
-    def rescan_nvr(self, nvr_id):
-        nvr = self.camera_store.get_nvr(nvr_id)
-        if not nvr:
-            return
-        dialog = AddNVRDialog(self)
-        dialog.setWindowTitle(f"بازخوانی کانال‌های «{nvr['name']}»")
-        dialog.name_input.setText(nvr["name"])
-        dialog.ip_input.setText(nvr["ip"])
-        dialog.rtsp_port_input.setText(str(nvr.get("rtsp_port", "554")))
-        dialog.onvif_port_input.setText(str(nvr.get("onvif_port", "") or ""))
-        dialog.user_input.setText(nvr.get("user", ""))
-        dialog.pass_input.setText(nvr.get("pass", ""))
-        idx = dialog.brand_combo.findData(nvr.get("brand", "auto"))
-        if idx >= 0:
-            dialog.brand_combo.setCurrentIndex(idx)
-        cam_brand_idx = dialog.camera_brand_combo.findData(nvr.get("camera_brand", "auto"))
-        if cam_brand_idx >= 0:
-            dialog.camera_brand_combo.setCurrentIndex(cam_brand_idx)
-
-        if dialog.exec():
-            data = dialog.get_nvr_data()
-            self.camera_store.update_nvr(nvr_id, **data)
-            existing_channels = {c.get("channel") for c in self.camera_store.cameras_for_nvr(nvr_id)}
-            added_cams = []
-            for entry, default_name in dialog.get_selected_channels():
-                if entry["channel"] in existing_channels:
-                    continue  # این کانال قبلاً اضافه شده است
-                added_cams.append(self._add_channel_from_entry(nvr, entry, default_name))
-            self.reload_camera_list()
-            # رفع درخواست: کانال‌های تازه‌کشف‌شده هم اتوماتیک به پنجره‌ی نمایش اضافه شوند.
-            for cam in added_cams:
-                self._auto_display_camera(cam)
-            QMessageBox.information(self, "بازخوانی کامل شد", f"{len(added_cams)} کانال جدید اضافه شد.")
+    def rescan_nvr(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, 'rescan_nvr')(*args, **kwargs)
 
     def _save_audio_creds(self, cam_id, user, pwd):
         """(2.0.110-beta) ذخیره‌ی یوزر/پس جدیدی که کاربر برای صدا وارد کرد."""
@@ -3912,73 +3629,9 @@ class MainWindow(QMainWindow):
             )
         QMessageBox.information(self, "افزودن کامل شد", msg)
 
-    def show_camera_context_menu(self, pos):
-        item = self.camera_list.itemAt(pos)
-        if not item:
-            return
-        data = item.data(0, Qt.ItemDataRole.UserRole)
-        if not data:
-            return
-        menu = QMenu(self)
-        if data["type"] == "camera":
-            edit_action = QAction("ویرایش", self)
-            edit_action.triggered.connect(lambda: self.edit_camera(data["id"]))
-            # (2.0.61-beta) گروه‌بندی
-            group_action = QAction("📁 انتقال به گروه…", self)
-            group_action.triggered.connect(lambda: self.move_camera_to_group(data["id"]))
-            delete_action = QAction("حذف", self)
-            delete_action.triggered.connect(lambda: self.delete_camera(data["id"]))
-            # (2.0.68-beta) کنترل PTZ/لنز موتورایزد
-            ptz_action = QAction("🎮 کنترل PTZ", self)
-            ptz_action.triggered.connect(lambda: self.open_ptz_control(data["id"]))
-            # (2.0.82-beta) شنیدن صدای دوربین (ترک صوتی RTSP)
-            listen_action = QAction("🎧 شنیدن صدای دوربین", self)
-            listen_action.triggered.connect(lambda: self.open_listen_dialog(data["id"]))
-            menu.addAction(edit_action)
-            menu.addAction(ptz_action)
-            menu.addAction(listen_action)
-            menu.addAction(group_action)
-            menu.addAction(delete_action)
-        elif data["type"] == "group":
-            # (2.0.61-beta) گروه‌بندی: مدیریت پوشه‌ی گروه
-            rename_action = QAction("✏ تغییر نام گروه", self)
-            rename_action.triggered.connect(lambda: self.rename_camera_group(data["name"]))
-            delete_group_action = QAction("🗑 حذف گروه", self)
-            delete_group_action.triggered.connect(lambda: self.delete_camera_group(data["name"]))
-            menu.addAction(rename_action)
-            menu.addAction(delete_group_action)
-        else:  # nvr
-            rescan_action = QAction("بازخوانی کانال‌ها", self)
-            rescan_action.triggered.connect(lambda: self.rescan_nvr(data["id"]))
-            # رفع درخواست: برای NVRهایی که سرویس RTSP‌شان مشکل فریمور دارد
-            # (پخش زنده و بازخوانی کانال از طریق RTSP/ONVIF جواب نمی‌دهد)،
-            # یک راه جایگزین: باز کردن پنل وب واقعی خود NVR داخل برنامه (با
-            # موتور Chromium) که هم پخش زنده در آن سالم کار می‌کند و هم
-            # می‌توان لیست کانال‌های واقعی را از همان‌جا گرفت.
-            webview_action = QAction("باز کردن پنل وب NVR (برای دستگاه‌های با RTSP خراب)", self)
-            webview_action.triggered.connect(lambda: self.open_nvr_webview(data["id"]))
-            # رفع درخواست: بررسی وضعیت هارددیسک NVR و جست‌وجوی بازه‌های
-            # زمانی‌ای که واقعاً روی هارد خودِ NVR ضبط شده - از طریق همان
-            # API وب رسمی سازنده (رجوع کنید به nvr_storage_api.py).
-            storage_action = QAction("🗄 هارد و ضبط‌های NVR", self)
-            storage_action.triggered.connect(lambda: self.open_nvr_storage(data["id"]))
-            # (2.0.52-beta) قالب دلخواه آدرس پخش بازبینی: برای NVRهایی که
-            # قالب استاندارد Hikvision/Dahua را پشتیبانی نمی‌کنند.
-            playback_tpl_action = QAction("⚙ قالب آدرس پخش بازبینی", self)
-            playback_tpl_action.triggered.connect(
-                lambda: self.edit_nvr_playback_template(data["id"]))
-            delete_action = QAction("حذف NVR و همه کانال‌ها", self)
-            delete_action.triggered.connect(lambda: self.delete_nvr(data["id"]))
-            # (2.0.61-beta) گروه‌بندی
-            nvr_group_action = QAction("📁 انتقال به گروه…", self)
-            nvr_group_action.triggered.connect(lambda: self.move_nvr_to_group(data["id"]))
-            menu.addAction(rescan_action)
-            menu.addAction(webview_action)
-            menu.addAction(storage_action)
-            menu.addAction(playback_tpl_action)
-            menu.addAction(nvr_group_action)
-            menu.addAction(delete_action)
-        menu.exec(self.camera_list.mapToGlobal(pos))
+    def show_camera_context_menu(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, 'show_camera_context_menu')(*args, **kwargs)
 
     def _ask_group_name(self, current=""):
         """(2.0.61-beta) دیالوگ انتخاب/ساخت گروه؛ برمی‌گرداند: نام گروه،
@@ -4061,67 +3714,17 @@ class MainWindow(QMainWindow):
             self.camera_store.remove_camera(cam_id)
             self.reload_camera_list()
 
-    def on_camera_item_activated(self, item, column=0):
-        data = item.data(0, Qt.ItemDataRole.UserRole)
-        if not data or data["type"] != "camera":
-            return
-        cam = self.camera_store.get_camera(data["id"])
-        if cam:
-            self.open_live_view(cam)
+    def on_camera_item_activated(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, 'on_camera_item_activated')(*args, **kwargs)
 
-    def on_scan_result_selected(self, item):
-        text = item.text()
-        if " " not in text:
-            return
-        ip = text.split(" ")[0]
-        # رفع باگ: ردیف‌های موقت («در حال اسکن...» / «هیچ دستگاهی یافت نشد.»)
-        # IP واقعی ندارند؛ فقط IPهایی که واقعاً در اسکن پیدا شده‌اند پردازش
-        # می‌شوند.
-        if ip not in self._scan_ports_by_ip:
-            return
+    def on_scan_result_selected(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, 'on_scan_result_selected')(*args, **kwargs)
 
-        if self.detect_thread is not None and self.detect_thread.isRunning():
-            return  # یک تشخیص در حال اجراست؛ منتظر پایان آن بمانیم.
-
-        # دابل‌کلیک یعنی فقط همین یک دستگاه (صف خالی است).
-        self._detect_queue = []
-        self._start_device_detect(ip)
-
-    def on_add_selected_scan_results(self):
-        """رفع درخواست: چند نتیجه‌ی اسکن هم‌زمان انتخاب و پشت‌سرهم اضافه شوند.
-        چون هر تشخیص (و در ادامه‌ی آن، دیالوگ افزودن دوربین/NVR) نیاز به
-        تعامل کاربر دارد، دستگاه‌ها یکی‌یکی (نه هم‌زمان) پردازش می‌شوند: بعد
-        از بسته‌شدن دیالوگ مربوط به هر دستگاه، خودکار سراغ دستگاه بعدی در صف
-        می‌رود."""
-        if self.detect_thread is not None and self.detect_thread.isRunning():
-            return
-
-        ips = []
-        # رفع درخواست: انتخاب چندتایی دیگر با Ctrl/Shift نیست؛ آیتم‌هایی که
-        # چک‌باکس‌شان تیک خورده (Qt.CheckState.Checked) به‌عنوان انتخاب‌شده
-        # در نظر گرفته می‌شوند.
-        for i in range(self.scan_result_list.count()):
-            item = self.scan_result_list.item(i)
-            if item.checkState() != Qt.CheckState.Checked:
-                continue
-            text = item.text()
-            if " " not in text:
-                continue
-            ip = text.split(" ")[0]
-            if ip not in self._scan_ports_by_ip:
-                continue
-            if ip not in ips:
-                ips.append(ip)
-
-        if not ips:
-            QMessageBox.information(
-                self, "موردی انتخاب نشده",
-                "ابتدا چک‌باکس کنار یک یا چند دستگاه را از لیست نتایج اسکن تیک بزنید."
-            )
-            return
-
-        self._detect_queue = ips[1:]
-        self._start_device_detect(ips[0])
+    def on_add_selected_scan_results(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, 'on_add_selected_scan_results')(*args, **kwargs)
 
     def _start_device_detect(self, ip):
         # رفع درخواست: دیگر از کاربر «دوربین تکی یا NVR؟» پرسیده نمی‌شود؛
@@ -4845,53 +4448,9 @@ class MainWindow(QMainWindow):
         open_manual(getattr(self, "_current_page_key", "home"), parent=self,
                     allowed_pages=allowed)
 
-    def _on_event_item_double_clicked(self, item):
-        """(1.0.0) دبل‌کلیک روی آیتم پنل رویدادها: نمایش تصویر با جزئیات."""
-        try:
-            # داده‌ی رویداد را از آیتم می‌خوانیم (اگر ذخیره شده باشد)
-            ev = item.data(Qt.ItemDataRole.UserRole)
-            if not ev:
-                return
-            img_path = (ev.get("image_path") or "") if isinstance(ev, dict) else ""
-            if not img_path or not os.path.isfile(img_path):
-                return
-            # پنجره‌ی نمایش تصویر با جزئیات
-            from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel
-            from PyQt6.QtGui import QPixmap
-            from PyQt6.QtCore import Qt as _Qt
-            dlg = QDialog(self)
-            dlg.setWindowTitle("تصویر رویداد")
-            dlg.setLayoutDirection(_Qt.LayoutDirection.RightToLeft)
-            dlg.resize(600, 550)
-            lay = QVBoxLayout(dlg)
-            # تصویر
-            pix = QPixmap(img_path)
-            img_lbl = QLabel()
-            img_lbl.setAlignment(_Qt.AlignmentFlag.AlignCenter)
-            if not pix.isNull():
-                img_lbl.setPixmap(pix.scaled(
-                    560, 400, _Qt.AspectRatioMode.KeepAspectRatio,
-                    _Qt.TransformationMode.SmoothTransformation))
-            lay.addWidget(img_lbl)
-            # جزئیات
-            if isinstance(ev, dict):
-                from gallery_dialog import _fa_event_type
-                lines = []
-                lines.append(f"<b>نوع رویداد:</b> {_fa_event_type(ev.get('event_type'))}")
-                if ev.get("camera_name"):
-                    lines.append(f"<b>دوربین:</b> {ev.get('camera_name')}")
-                if ev.get("ts"):
-                    lines.append(f"<b>زمان:</b> {ev.get('ts')}")
-                if ev.get("person_name"):
-                    lines.append(f"<b>شخص:</b> {ev.get('person_name')}")
-                if ev.get("detail"):
-                    lines.append(f"<b>توضیح:</b> {ev.get('detail')}")
-                det = QLabel("<br>".join(lines))
-                det.setWordWrap(True)
-                lay.addWidget(det)
-            dlg.exec()
-        except Exception:
-            pass
+    def _on_event_item_double_clicked(self, *args, **kwargs):
+        """(2.2.10) delegate به RightPanelWidget."""
+        return getattr(self.right_panel, '_on_event_item_double_clicked')(*args, **kwargs)
 
     def open_license_camera_dialog(self):
         """(1.0.0) باز کردن دیالوگ انتخاب دوربین برای قابلیت‌ها (لایسنس)."""
@@ -4906,21 +4465,9 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-    def open_face_gallery(self):
-        """(1.0.0) دکمه‌ی «🖼 دیدن تصاویر» حالا پنجره‌ی گالری را باز می‌کند:
-        مرتب‌سازی بر اساس رویداد/تاریخ/ساعت، نمایش جزئیات، و ذخیره با
-        کیفیت بالا."""
-        try:
-            from gallery_dialog import GalleryDialog
-            dlg = GalleryDialog(report_store, parent=self)
-            dlg.exec()
-        except Exception as e:
-            try:
-                from PyQt6.QtWidgets import QMessageBox
-                QMessageBox.warning(self, "خطا",
-                                    f"باز کردن گالری ناموفق بود:\n{e}")
-            except Exception:
-                pass
+    def open_face_gallery(self, *args, **kwargs):
+        """(2.2.10) delegate به RightPanelWidget."""
+        return getattr(self.right_panel, 'open_face_gallery')(*args, **kwargs)
 
     def on_face_event(self, cam, person, crop_frame):
         """برای هر چهره‌ای که هر یک از دوربین‌ها ببیند (شناخته‌شده یا
@@ -4968,7 +4515,7 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem(text)
             if pixmap is not None and not pixmap.isNull():
                 item.setIcon(QIcon(pixmap))
-            self.events_panel_list.insertItem(0, item)
+            self._insert_event_item(item)
             while self.events_panel_list.count() > 300:
                 self.events_panel_list.takeItem(
                     self.events_panel_list.count() - 1)
@@ -5089,7 +4636,7 @@ class MainWindow(QMainWindow):
                     item.setIcon(QIcon(pixmap))
             except Exception:
                 pass
-            self.events_panel_list.insertItem(0, item)
+            self._insert_event_item(item)
             while self.events_panel_list.count() > 300:
                 self.events_panel_list.takeItem(
                     self.events_panel_list.count() - 1)
@@ -5129,7 +4676,7 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
             item.setForeground(QColor("#c0392b"))
-            self.events_panel_list.insertItem(0, item)
+            self._insert_event_item(item)
             # جلوگیری از رشد بی‌حد پنل در نشست‌های طولانی.
             while self.events_panel_list.count() > 300:
                 self.events_panel_list.takeItem(self.events_panel_list.count() - 1)
@@ -5477,7 +5024,7 @@ class MainWindow(QMainWindow):
                     item.setIcon(QIcon(pixmap))
             except Exception:
                 pass
-            self.events_panel_list.insertItem(0, item)
+            self._insert_event_item(item)
             while self.events_panel_list.count() > 300:
                 self.events_panel_list.takeItem(
                     self.events_panel_list.count() - 1)
@@ -5529,53 +5076,13 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------- scan ---
 
-    def run_network_scan(self):
-        # رفع باگ: قبلاً scan_subnet مستقیماً روی ترد UI اجرا می‌شد و کل برنامه
-        # را برای طول مدت اسکن (چند ثانیه تا چند ده ثانیه) کاملاً فریز می‌کرد؛
-        # حالا در یک QThread جداگانه (NetworkScanThread) اجرا می‌شود.
-        if self.network_scan_thread is not None and self.network_scan_thread.isRunning():
-            return
+    def run_network_scan(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, 'run_network_scan')(*args, **kwargs)
 
-        subnet = self.subnet_input.text().strip()
-        # (2.0.31-beta) اعتبارسنجی رنج IP قبل از شروع اسکن؛ قالب‌های مجاز:
-        # «192.168.1»، «192.168.1.20-192.168.1.80»، «192.168.1.20-80»،
-        # «192.168.2.0/24» و ترکیب چند رنج با ویرگول.
-        try:
-            ip_count = len(parse_ip_range(subnet))
-        except ValueError as ex:
-            QMessageBox.warning(self, "رنج IP نامعتبر", str(ex))
-            return
-        self.scan_result_list.clear()
-        self.scan_result_list.addItem(f"در حال اسکن {ip_count} آدرس...")
-        # رفع باگ: حین اسکن، لیست نتایج غیرفعال می‌شود تا دابل‌کلیک روی ردیف
-        # موقت «در حال اسکن...» (که IP واقعی نیست) تشخیص دستگاه را با IP
-        # نامعتبر شروع نکند.
-        self.scan_result_list.setEnabled(False)
-        self.scan_btn.setEnabled(False)
-
-        self.network_scan_thread = NetworkScanThread(subnet, self)
-        self.network_scan_thread.finished_signal.connect(self._on_network_scan_finished)
-        self.network_scan_thread.start()
-
-    def _on_network_scan_finished(self, devices):
-        self.scan_btn.setEnabled(True)
-        self.scan_result_list.setEnabled(True)
-        self.scan_result_list.clear()
-        self._scan_ports_by_ip = {}
-        if not devices:
-            self.scan_result_list.addItem("هیچ دستگاهی یافت نشد.")
-            return
-
-        for dev in devices:
-            self._scan_ports_by_ip[dev["ip"]] = dev["ports"]
-            ports_str = ",".join(map(str, dev["ports"]))
-            item = QListWidgetItem(f"{dev['ip']} (پورت‌ها: {ports_str})")
-            # رفع درخواست: به‌جای انتخاب با Ctrl/Shift، کنار هر دستگاه یک
-            # چک‌باکس قرار می‌گیرد تا کاربر با تیک زدن، دستگاه‌های موردنظر
-            # برای اتصال هم‌زمان را مشخص کند.
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Unchecked)
-            self.scan_result_list.addItem(item)
+    def _on_network_scan_finished(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, '_on_network_scan_finished')(*args, **kwargs)
 
     # ------------------------------------------------------------ close ---
 
