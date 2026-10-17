@@ -53,8 +53,13 @@ check("_stop_thread defined", "_stop_thread" in _methods)
 check("reject stops thread safely", _calls(_methods["reject"], "_stop_thread"))
 check("closeEvent stops thread safely",
       _calls(_methods["closeEvent"], "_stop_thread"))
+# (2.2.7 - ریفکتور) منطق واقعی توقف امن حالا در NVRPlaybackWidget است و
+# NVRPlaybackDialog فقط delegate می‌کند؛ چک terminate روی ویجت انجام می‌شود.
+_wcls = next(n for n in ast.walk(_tree)
+             if isinstance(n, ast.ClassDef) and n.name == "NVRPlaybackWidget")
+_wmethods = {n.name: n for n in _wcls.body if isinstance(n, ast.FunctionDef)}
 check("_stop_thread has terminate fallback",
-      "terminate" in ast.dump(_methods["_stop_thread"]))
+      "terminate" in ast.dump(_wmethods["_stop_thread"]))
 
 # تست رفتاری: دیالوگ با capture ساختگی، بستن فوری نباید ترد زنده بگذارد
 try:
