@@ -118,8 +118,16 @@ class _MonitorStreamWorker(QThread):
                 time.sleep(3.0)  # تلاش مجدد
 
     def stop(self):
+        # (بازبینی IVDagent - 2.2.8) توقف امن: مثل _stop_thread؛ اگر ترد در
+        # cap.read() گیر کرده باشد (rw_timeout تا ~۵ ثانیه)، wait ساده
+        # تایم‌اوت می‌شود و deleteLater روی QThread در حال اجرا = کرش qFatal.
         self._running = False
-        self.wait(3000)
+        try:
+            if self.isRunning() and not self.wait(7000):
+                self.terminate()
+                self.wait(3000)
+        except Exception:
+            pass
 
 
 # ------------------------------------------------------------------ tile --
@@ -648,6 +656,12 @@ class MonitorWindow(QMainWindow):
             t.deleteLater()
         self._tiles = []
         self._selected_tile = None
+        # (بازبینی IVDagent - 2.2.8) ریست وضعیت انتخاب تا stale نماند
+        try:
+            self._sel_label.setText("—")
+            self._people_act.setChecked(False)
+        except Exception:
+            pass
         rows = cols = int(n ** 0.5)
         for r in range(rows):
             for c in range(cols):
