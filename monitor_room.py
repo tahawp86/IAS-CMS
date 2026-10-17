@@ -345,359 +345,61 @@ class MonitorTileWidget(QWidget):
 # ---------------------------------------------------------------- window --
 
 class MonitorWindow(QMainWindow):
-    """پنجره‌ی نمایش دوربین‌ها برای یک مانیتور."""
+    """پنجره‌ی نمایش دوربین‌ها برای یک نما (view).
 
-    def __init__(self, title="اتاق مانیتورینگ", parent=None):
+    (2.2.9) بازطراحی کامل: به‌جای تایل‌های سبک و نوار ابزار جدا، از
+    CameraPageWidget (همان صفحه‌ی مرکزی پنجره‌ی اصلی) استفاده می‌کند —
+    single source of truth؛ ظاهر، چیدمان و همه‌ی دکمه‌ها دقیقاً مثل
+    صفحه‌ی اصلی و همه درست کار می‌کنند.
+    """
+
+    def __init__(self, title="اتاق مانیتورینگ", parent=None, main_window=None):
         super().__init__(parent)
         self.setWindowTitle(title)
-        self._tiles = []
-        self._grid_size = 4
-        self._selected_tile = None
-        # دسترسی به storeها از پنجره‌ی اصلی (برای مدیریت دوربین)
-        self._main = parent
-        central = QWidget(self)
-        self._grid = QGridLayout(central)
-        self._grid.setSpacing(4)
-        self._grid.setContentsMargins(4, 4, 4, 4)
-        self.setCentralWidget(central)
-        self.setStyleSheet("background: #0d1117;")
+        self._main = main_window or parent
+        self._view_mode = "monitor"
+        self._mon_index = 0
+
+        from camera_page import CameraPageWidget
+        self.camera_page = CameraPageWidget(self._main, self)
+        # دکمه‌ی سایدبار در پنجره‌ی نما معنا ندارد — مخفی‌اش می‌کنیم
+        try:
+            self.camera_page.sidebar_toggle_btn.setVisible(False)
+        except Exception:
+            pass
+        self.setCentralWidget(self.camera_page)
         self.resize(960, 600)
-        self._build_tiles(4)
-        self._build_mgmt_toolbar()
-        self._build_event_dock()
 
-    def _camera_store(self):
-        try:
-            return self._main.camera_store
-        except Exception:
-            return None
-
-    def _report_store(self):
-        try:
-            from report_store import report_store
-            return report_store
-        except Exception:
-            return None
-
-    # -- نوار ابزار مدیریت دوربین (2.2.8) --
-
-    def _build_mgmt_toolbar(self):
-        tb = QToolBar("مدیریت دوربین", self)
-        tb.setMovable(False)
-        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)
-        self._mgmt_toolbar = tb
-
-        tb.addWidget(QLabel("دوربین انتخاب‌شده:"))
-        self._sel_label = QLabel("—")
-        self._sel_label.setStyleSheet("color: #9b978c; padding: 0 8px;")
-        tb.addWidget(self._sel_label)
-        tb.addSeparator()
-
-        draw_act = tb.addAction("✏️ رسم محدوده")
-        draw_act.triggered.connect(self._mgmt_draw_zone)
-
-        zones_act = tb.addAction("📋 محدوده‌ها")
-        zones_act.triggered.connect(self._mgmt_zones_dialog)
-
-        self._people_act = tb.addAction("🔢 شمارش افراد")
-        self._people_act.setCheckable(True)
-        self._people_act.triggered.connect(self._mgmt_toggle_people)
-
-        audio_act = tb.addAction("🎧 صدا")
-        audio_act.triggered.connect(self._mgmt_audio)
-
-        tb.addSeparator()
-        zoom_out = tb.addAction("🔍−")
-        zoom_out.triggered.connect(lambda: self._mgmt_zoom(-1))
-        zoom_in = tb.addAction("🔍+")
-        zoom_in.triggered.connect(lambda: self._mgmt_zoom(1))
-        zoom_reset = tb.addAction("↺")
-        zoom_reset.setToolTip("بازنشانی زوم")
-        zoom_reset.triggered.connect(self._mgmt_zoom_reset)
-
-        tb.addSeparator()
-        tb.addWidget(QLabel("چیدمان:"))
-        self._grid_combo = QComboBox()
-        for n in GRID_CHOICES:
-            self._grid_combo.addItem(str(n), n)
-        self._grid_combo.setCurrentIndex(GRID_CHOICES.index(4))
-        self._grid_combo.currentIndexChanged.connect(self._mgmt_grid_changed)
-        tb.addWidget(self._grid_combo)
-
-        tb.addSeparator()
-        self._events_act = tb.addAction("📊 رویدادها")
-        self._events_act.setCheckable(True)
-        self._events_act.triggered.connect(self._mgmt_toggle_events)
-
-        tb.addSeparator()
-        console_act = tb.addAction("🎛️ کنسول کامل")
-        console_act.triggered.connect(self._mgmt_open_console)
-
-    def _build_event_dock(self):
-        dock = QDockWidget("📊 رویدادهای دوربین", self)
-        dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea |
-                             Qt.DockWidgetArea.LeftDockWidgetArea)
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        self._event_list = QListWidget()
-        lay.addWidget(self._event_list)
-        dock.setWidget(w)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
-        dock.setVisible(False)
-        self._event_dock = dock
-
-    # -- انتخاب تایل --
-
-    def _on_tile_clicked(self, tile):
-        for t in self._tiles:
-            t.set_selected(t is tile)
-        self._selected_tile = tile
-        name = (tile.cam or {}).get("name", "—") if tile.cam else "—"
-        self._sel_label.setText(name)
-        # همگام‌سازی وضعیت شمارش افراد
-        try:
-            on = bool((tile.cam or {}).get("people_counting", False))
-            self._people_act.setChecked(on)
-        except Exception:
-            pass
-        # به‌روزرسانی پنل رویدادها
-        if self._event_dock.isVisible():
-            self._refresh_events()
-
-    def _require_tile(self):
-        t = self._selected_tile
-        if t is None or t.cam is None:
-            QMessageBox.information(self, "مدیریت دوربین",
-                                    "اول یک دوربین را در گرید انتخاب کنید (کلیک).")
-            return None
-        return t
-
-    # -- اکشن‌های نوار ابزار --
-
-    def _mgmt_draw_zone(self):
-        t = self._require_tile()
-        if t:
-            # حالت رسم را روی تایل فعال کن؛ بعد از رسم، zone_drawn می‌آید
-            for o in self._tiles:
-                o.set_draw_mode(o is t)
-
-    def _on_zone_drawn(self, points):
-        t = self._selected_tile
-        if t is None or t.cam is None:
-            return
-        from PyQt6.QtWidgets import QInputDialog
-        import uuid as _uuid
-        name, ok = QInputDialog.getText(self, "محدوده جدید", "نام محدوده:")
-        if not ok:
-            return
-        zones = list(t.cam.get("regions") or [])
-        name = name.strip() or f"محدوده {len(zones) + 1}"
-        zones.append({"id": str(_uuid.uuid4()), "number": len(zones) + 1,
-                      "name": name, "points": [list(p) for p in points]})
-        self._save_tile_zones(t, zones)
-
-    def _save_tile_zones(self, t, zones):
-        t.cam["regions"] = zones
-        t.set_zones(zones)
-        try:
-            cs = self._camera_store()
-            if cs and t.cam.get("id"):
-                cs.update_camera(t.cam["id"], regions=zones)
-        except Exception:
-            pass
-
-    def _mgmt_zones_dialog(self):
-        t = self._require_tile()
-        if not t:
-            return
-        from PyQt6.QtWidgets import QDialog as _QD, QVBoxLayout as _VL, \
-            QHBoxLayout as _HL, QPushButton as _PB, QListWidget as _LW
-        dlg = _QD(self)
-        dlg.setWindowTitle(f"مدیریت محدوده‌ها — {(t.cam or {}).get('name', '')}")
-        dlg.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        dlg.resize(320, 300)
-        lay = _VL(dlg)
-        lw = _LW()
-        zones = list(t.cam.get("regions") or [])
-        for z in zones:
-            _lw_item = QListWidgetItem(z.get("name") or f"محدوده {z.get('number', '?')}")
-            _lw_item.setData(Qt.ItemDataRole.UserRole, z.get("id"))
-            lw.addItem(_lw_item)
-        lay.addWidget(lw)
-        row = _HL()
-        del_btn = _PB("🗑 حذف انتخاب‌شده")
-        def _del():
-            it = lw.currentItem()
-            if not it:
-                return
-            zid = it.data(Qt.ItemDataRole.UserRole)
-            nz = [z for z in zones if z.get("id") != zid]
-            zones.clear()
-            zones.extend(nz)
-            self._save_tile_zones(t, zones)
-            lw.clear()
-            for z in zones:
-                _it = QListWidgetItem(z.get("name") or "?")
-                _it.setData(Qt.ItemDataRole.UserRole, z.get("id"))
-                lw.addItem(_it)
-        del_btn.clicked.connect(_del)
-        row.addWidget(del_btn)
-        close_btn = _PB("بستن")
-        close_btn.clicked.connect(dlg.accept)
-        row.addWidget(close_btn)
-        lay.addLayout(row)
-        dlg.exec()
-
-    def _mgmt_toggle_people(self, on):
-        t = self._require_tile()
-        if not t:
-            self._people_act.setChecked(not on)
-            return
-        t.cam["people_counting"] = bool(on)
-        try:
-            cs = self._camera_store()
-            if cs and t.cam.get("id"):
-                cs.update_camera(t.cam["id"], people_counting=bool(on))
-        except Exception:
-            pass
-
-    def _mgmt_audio(self):
-        t = self._require_tile()
-        if not t:
-            return
-        from PyQt6.QtWidgets import QDialog as _QD, QVBoxLayout as _VL, \
-            QPushButton as _PB
-        dlg = _QD(self)
-        dlg.setWindowTitle("🎧 صدا")
-        dlg.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        lay = _VL(dlg)
-        lb = _PB("🎧 شنیدن صدای دوربین")
-        lb.clicked.connect(lambda: self._open_listen(dict(t.cam)))
-        tb = _PB("🎤 صحبت با دوربین")
-        tb.clicked.connect(lambda: self._open_talk(dict(t.cam)))
-        lay.addWidget(lb)
-        lay.addWidget(tb)
-        dlg.exec()
-
-    def _open_listen(self, cam):
-        try:
-            from listen_dialog import ListenDialog
-            ListenDialog(cam, parent=self).exec()
-        except Exception as e:
-            QMessageBox.warning(self, "خطا", f"باز کردن شنیدن صدا ممکن نشد:\n{e}")
-
-    def _open_talk(self, cam):
-        try:
-            from talk_dialog import TalkDialog
-            TalkDialog(cam, parent=self).exec()
-        except Exception as e:
-            QMessageBox.warning(self, "خطا", f"باز کردن صحبت ممکن نشد:\n{e}")
-
-    def _mgmt_zoom(self, direction):
-        t = self._require_tile()
-        if t:
-            t.zoom_step(direction)
-
-    def _mgmt_zoom_reset(self):
-        t = self._require_tile()
-        if t:
-            t.reset_zoom()
-
-    def _mgmt_grid_changed(self, idx):
-        n = self._grid_combo.currentData()
-        if n in GRID_CHOICES:
-            self.set_grid_size(n)
-
-    def _mgmt_toggle_events(self, on):
-        if on and not self._require_tile():
-            self._events_act.setChecked(False)
-            return
-        self._event_dock.setVisible(on)
-        if on:
-            self._refresh_events()
-
-    def _refresh_events(self):
-        self._event_list.clear()
-        t = self._selected_tile
-        if t is None or not t.cam:
-            return
-        rs = self._report_store()
-        if not rs:
-            return
-        try:
-            rows = rs.query(camera_name=t.cam.get("name", ""), limit=50)
-            for r in rows[:50]:
-                ts = r[0] if len(r) > 0 else ""
-                ev = r[1] if len(r) > 1 else ""
-                self._event_list.addItem(f"{ts} — {ev}")
-            if not rows:
-                self._event_list.addItem("رویدادی ثبت نشده است.")
-        except Exception:
-            pass
-
-    def _mgmt_open_console(self):
-        t = self._require_tile()
-        if not t:
-            return
-        try:
-            from camera_console import CameraConsoleDialog
-            dlg = CameraConsoleDialog(
-                dict(t.cam), camera_store=self._camera_store(),
-                report_store=self._report_store(), parent=self)
-            dlg.exec()
-        except Exception as e:
-            QMessageBox.warning(self, "خطا", f"باز کردن کنسول ممکن نشد:\n{e}")
-
-    def _build_tiles(self, n):
-        for t in self._tiles:
-            self._grid.removeWidget(t)
-            t.stop()
-            t.setParent(None)
-            t.deleteLater()
-        self._tiles = []
-        self._selected_tile = None
-        # (بازبینی IVDagent - 2.2.8) ریست وضعیت انتخاب تا stale نماند
-        try:
-            self._sel_label.setText("—")
-            self._people_act.setChecked(False)
-        except Exception:
-            pass
-        rows = cols = int(n ** 0.5)
-        for r in range(rows):
-            for c in range(cols):
-                t = MonitorTileWidget(self)
-                t.clicked.connect(self._on_tile_clicked)
-                t.zone_drawn.connect(self._on_zone_drawn)
-                self._grid.addWidget(t, r, c)
-                self._tiles.append(t)
-        self._grid_size = n
-        try:
-            self._grid_combo.setCurrentIndex(GRID_CHOICES.index(n))
-        except Exception:
-            pass
+    @property
+    def camera_grid(self):
+        return self.camera_page.camera_grid
 
     def set_grid_size(self, n):
-        if n not in GRID_CHOICES:
-            n = 4
-        # (2.2.8 - فیکس باگ قدیمی) جفت (cam, url) را نگه دار تا بعد از
-        # بازسازی تایل‌ها، استریم‌ها وصل بمانند
-        pairs = [(t.cam, t._rtsp_url) for t in self._tiles if t.cam]
-        self._build_tiles(n)
-        self.set_cameras(pairs)
+        """تغییر چیدمان گرید (همگام با کمبوباکس صفحه)."""
+        try:
+            idx = self.camera_page.grid_size_combo.findData(n)
+            if idx >= 0:
+                self.camera_page.grid_size_combo.setCurrentIndex(idx)
+            else:
+                self.camera_grid.set_grid_size(n)
+        except Exception:
+            try:
+                self.camera_grid.set_grid_size(n)
+            except Exception:
+                pass
 
     def set_cameras(self, cam_url_list):
-        """cam_url_list: لیست (cam_dict, rtsp_url)."""
-        for i, tile in enumerate(self._tiles):
-            if i < len(cam_url_list):
-                cam, url = cam_url_list[i]
-                tile.set_camera(cam, url)
-                # (2.2.8) زون‌های ذخیره‌شده را روی تایل نشان بده
-                try:
-                    tile.set_zones((cam or {}).get("regions") or [])
-                except Exception:
-                    pass
-            else:
-                tile.clear()
+        """cam_url_list: لیست (cam_dict, rtsp_url) — در اسلات‌های اول می‌نشینند."""
+        grid = self.camera_grid
+        try:
+            grid.stop_all()
+        except Exception:
+            pass
+        for i, (cam, url) in enumerate(cam_url_list):
+            try:
+                grid.assign_camera_to_slot(cam, url, i)
+            except Exception:
+                pass
 
     def move_to_monitor(self, mon, fullscreen=True):
         """انتقال پنجره به مانیتور مشخص (mon: dict از get_monitors)."""
@@ -705,7 +407,6 @@ class MonitorWindow(QMainWindow):
             screens = QGuiApplication.screens()
             if 0 <= mon["index"] < len(screens):
                 scr = screens[mon["index"]]
-                # اول از حالت تمام‌صفحه خارج شو تا setScreen اثر کند
                 self.showNormal()
                 try:
                     self.windowHandle().setScreen(scr)
@@ -714,7 +415,6 @@ class MonitorWindow(QMainWindow):
                 if fullscreen:
                     self.showFullScreen()
                 else:
-                    # وسط همان مانیتور
                     g = scr.geometry()
                     self.setGeometry(g.x() + 40, g.y() + 40,
                                      min(1200, g.width() - 80),
@@ -728,8 +428,6 @@ class MonitorWindow(QMainWindow):
         else:
             self.show()
         return False
-
-    # -- حالت شناور: کاربر خودش با موس جابه‌جا می‌کند --
 
     def open_floating(self, geom=None):
         """باز کردن به‌صورت پنجره‌ی عادیِ قابل‌حرکت/تغییراندازه."""
@@ -755,20 +453,20 @@ class MonitorWindow(QMainWindow):
             self.showFullScreen()
 
     def mouseDoubleClickEvent(self, ev):
-        # دابل‌کلیک = تمام‌صفحه/برگشت (برای پنجره‌های شناور)
         self.toggle_fullscreen()
         super().mouseDoubleClickEvent(ev)
 
     def keyPressEvent(self, ev):
-        # Esc = خروج از تمام‌صفحه
         if ev.key() == Qt.Key.Key_Escape and self.isFullScreen():
             self.showNormal()
             return
         super().keyPressEvent(ev)
 
     def closeEvent(self, ev):
-        for t in self._tiles:
-            t.stop()
+        try:
+            self.camera_grid.stop_all()
+        except Exception:
+            pass
         super().closeEvent(ev)
 
 
@@ -1017,10 +715,10 @@ class MonitorRoomManager:
                 v = {
                     "mode": getattr(w, "_view_mode", "monitor"),
                     "monitor": getattr(w, "_mon_index", 0),
-                    "grid": w._grid_size,
+                    "grid": w.camera_page.grid_size_combo.currentData(),
                     "fullscreen": w.isFullScreen(),
-                    "cam_ids": [str((t.cam or {}).get("id", ""))
-                                for t in w._tiles if t.cam],
+                    "cam_ids": [str((s.cam or {}).get("id", ""))
+                                for s in w.camera_grid.slots if s.cam],
                 }
                 # موقعیت/اندازه‌ی پنجره‌های شناور هم ذخیره شود
                 if v["mode"] == "floating" and not w.isFullScreen():
