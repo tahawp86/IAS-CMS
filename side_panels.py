@@ -11,11 +11,21 @@ host (معمولاً MainWindow) سرویس‌ها و کال‌بک‌ها را 
 داخل خود ویجت‌هاست.
 """
 
+import os
+
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor, QAction
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
-    QListWidget, QGroupBox, QSplitter, QSizePolicy, QMessageBox, QInputDialog,
+    QListWidget, QListWidgetItem, QTreeWidgetItem, QGroupBox, QSplitter,
+    QSizePolicy, QMessageBox, QInputDialog, QMenu,
 )
+
+from scanner import NetworkScanThread, parse_ip_range
+from device_detect import DeviceDetectThread
+from add_camera_dialog import AddCameraDialog
+from add_nvr_dialog import AddNVRDialog
+from report_store import report_store
 
 
 class LeftPanelWidget(QWidget):
@@ -511,6 +521,157 @@ class LeftPanelWidget(QWidget):
             self.scan_result_list.addItem(item)
 
 
+
+    def _net_badge(self, cam):
+        q = (cam or {}).get("net_quality", "")
+        kbps = (cam or {}).get("net_kbps")
+        rtt = (cam or {}).get("net_rtt_ms")
+        if not q:
+            return "", None
+        icon = {"خوب": "📶", "متوسط": "📶", "ضعیف": "⚠️", "قطع": "⛔",
+                "نامشخص": "❓"}.get(q, "📶")
+        color = {"خوب": "#2ecc71", "متوسط": "#f1c40f", "ضعیف": "#e67e22",
+                 "قطع": "#e74c3c", "نامشخص": "#95a5a6"}.get(q)
+        tip = "آخرین اسکن شبکه: %s" % q
+        if isinstance(kbps, (int, float)):
+            tip += f" (~{kbps:.0f} کیلوبیت/ثانیه)"
+        if isinstance(rtt, (int, float)):
+            tip += f" (تاخیر {rtt:.0f}ms)"
+        return f"  {icon}{q}", (color, tip)
+
+    def _on_probe_done(self, cam_id, res):
+        cam = self._host.camera_store.get_camera(cam_id)
+        if cam is None or not isinstance(res, dict):
+            return
+        cam["net_rtt_ms"] = res.get("rtt_ms")
+        kbps = res.get("kbps")
+        cam["net_kbps"] = round(kbps, 1) if isinstance(kbps, (int, float)) else None
+        cam["net_quality"] = res.get("quality") or "نامشخص"
+        cam["net_checked_at"] = res.get("checked_at")
+
+    def _on_probe_finished(self):
+        try:
+            self._host.camera_store.save()
+        except Exception:
+            pass
+        self._net_probe_thread = None
+        self.net_probe_btn.setEnabled(True)
+        self.net_probe_btn.setText("📶 تست پایداری شبکه")
+        self.reload_camera_list()
+        try:
+            quals = [c.get("net_quality", "?") for c in self._host.camera_store.cameras]
+            summary = ", ".join(f"{q}: {quals.count(q)}" for q in
+                                ("خوب", "متوسط", "ضعیف", "قطع", "نامشخص")
+                                if quals.count(q))
+            QMessageBox.information(self, "تست پایداری شبکه",
+                                    "اسکن تمام شد.\n" + (summary or "نتیجه‌ای ثبت نشد."))
+        except Exception:
+            pass
+
+    def _add_channel_from_entry(self, nvr, entry, default_name):
+        camera_ip = entry.get("camera_ip") or ""
+        if entry["is_full_url"]:
+            # ONVIF: خودِ URL کشف‌شده معمولاً از قبل مستقیماً به IP دوربین
+            # اشاره می‌کند (رجوع کنید به nvr_scanner._extract_camera_ip_from_uri).
+            return self._host.camera_store.add_channel_camera(
+                nvr, entry["channel"], default_name, path="", full_url=entry["path_or_url"],
+                camera_ip=camera_ip,
+            )
+        if camera_ip and entry.get("direct"):
+            # رفع درخواست: این کانال با یک مسیر واقعاً تست‌شده روی خودِ
+            # دوربین تایید شده (نه پروکسی NVR که خطا می‌داد)؛ دقیقاً مثل
+            # افزودن یک دوربین تکی، مستقیماً به همان IP/پورت ۵۵۴ دوربین وصل
+            # می‌شویم - در حالی که کانال همچنان زیر همین NVR در لیست می‌ماند.
+            return self._host.camera_store.add_channel_camera(
+                nvr, entry["channel"], default_name, path=entry["path_or_url"],
+                camera_ip=camera_ip, connect_ip=camera_ip, connect_port="554",
+            )
+        return self._host.camera_store.add_channel_camera(
+            nvr, entry["channel"], default_name, path=entry["path_or_url"], camera_ip=camera_ip,
+        )
+
+    def _start_device_detect(self, ip):
+        # رفع درخواست: دیگر از کاربر «دوربین تکی یا NVR؟» پرسیده نمی‌شود؛
+        # DeviceDetectThread با یک اتصال آزمایشی (ONVIF یا تست کانال‌ها)
+        # خودش نوع دستگاه را تشخیص می‌دهد - رجوع کنید به device_detect.py.
+        self._detect_ip = ip
+        self.scan_result_list.setEnabled(False)
+        self.add_selected_scan_btn.setEnabled(False)
+        self.detect_status_label.setText(f"در حال تشخیص نوع دستگاه {ip}...")
+
+        # رفع درخواست: تشخیص نوع دستگاه (و در ادامه، اتصال به دوربین/NVR) با
+        # نام‌کاربری/رمز کادر بالای پنل اسکن شبکه انجام می‌شود، نه مقدار ثابت
+        # admin/بدون‌رمز.
+        scan_user, scan_pass = self._scan_credentials()
+        self.detect_thread = DeviceDetectThread(
+            ip=ip,
+            open_ports=self._scan_ports_by_ip.get(ip, []),
+            rtsp_port="554",
+            user=scan_user,
+            pwd=scan_pass,
+            parent=self,
+        )
+        self.detect_thread.progress_signal.connect(self.detect_status_label.setText)
+        self.detect_thread.detected_signal.connect(self._on_device_detected)
+        self.detect_thread.failed_signal.connect(self._on_device_detect_failed)
+        self.detect_thread.start()
+
+    def _reset_detect_ui(self):
+        self.scan_result_list.setEnabled(True)
+        self.detect_status_label.setText("")
+
+    def _advance_detect_queue(self):
+        """بعد از بسته‌شدن دیالوگ دستگاه فعلی، اگر مورد دیگری در صفِ انتخاب
+        چندتایی باقی مانده، تشخیص آن را شروع می‌کند."""
+        if self._detect_queue:
+            next_ip = self._detect_queue.pop(0)
+            self._start_device_detect(next_ip)
+        else:
+            self.add_selected_scan_btn.setEnabled(True)
+
+    def _on_device_detected(self, kind, payload):
+        ip = self._detect_ip
+        self._reset_detect_ui()
+        scan_user, scan_pass = self._scan_credentials()
+        if kind == "nvr":
+            self.open_add_nvr_dialog(
+                prefill_ip=ip,
+                detected_brand=payload.get("brand"),
+                detected_onvif_port=payload.get("onvif_port"),
+                prefill_user=scan_user,
+                prefill_pass=scan_pass,
+            )
+        else:
+            self.open_add_camera_dialog(
+                prefill_ip=ip,
+                detected_path=payload.get("path"),
+                detected_full_url=payload.get("full_url"),
+                prefill_user=scan_user,
+                prefill_pass=scan_pass,
+            )
+        self._advance_detect_queue()
+
+    def _on_device_detect_failed(self, msg):
+        ip = self._detect_ip
+        self._reset_detect_ui()
+
+        # تشخیص خودکار با نام کاربری/رمز پیش‌فرض (admin/بدون رمز) ممکن است روی
+        # دستگاه‌هایی با اطلاعات ورود سفارشی شکست بخورد؛ در این حالت کاربر
+        # می‌تواند به‌صورت دستی و با وارد کردن رمز درست، نوع دستگاه را انتخاب کند.
+        box = QMessageBox(self)
+        box.setWindowTitle("تشخیص خودکار ناموفق بود")
+        box.setText(f"{msg}\n\nنوع دستگاه {ip} را به‌صورت دستی مشخص کنید:")
+        camera_btn = box.addButton("دوربین تکی", QMessageBox.ButtonRole.AcceptRole)
+        nvr_btn = box.addButton("NVR (چند کاناله)", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("انصراف", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+
+        scan_user, scan_pass = self._scan_credentials()
+        if box.clickedButton() == camera_btn:
+            self.open_add_camera_dialog(prefill_ip=ip, prefill_user=scan_user, prefill_pass=scan_pass)
+        elif box.clickedButton() == nvr_btn:
+            self.open_add_nvr_dialog(prefill_ip=ip, prefill_user=scan_user, prefill_pass=scan_pass)
+        self._advance_detect_queue()
 class RightPanelWidget(QWidget):
     """پنل راست: رویدادها + PTZ + حریق."""
 
@@ -574,7 +735,7 @@ class RightPanelWidget(QWidget):
         فعال/غیرفعال شدن تیک حریق هر دوربین یا افزودن/حذف دوربین، پنل خودکار
         ظاهر/مخفی می‌شود."""
         try:
-            store = getattr(self, "camera_store", None)
+            store = self._host.camera_store
             cams = list(getattr(store, "cameras", None) or [])
             any_fire = any(bool(c.get("fire_detection")) for c in cams)
         except Exception:

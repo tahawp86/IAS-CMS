@@ -2535,8 +2535,6 @@ class MainWindow(QMainWindow):
             migrate_legacy_violation(person_store.get_setting)
         except Exception:
             pass
-        self.network_scan_thread = None
-        self.detect_thread = None
         self._scan_ports_by_ip = {}  # ip -> [ports...] از آخرین اسکن شبکه
         self._detect_queue = []  # صف IPهایی که با انتخاب چندتایی باید پشت‌سرهم تشخیص داده شوند
 
@@ -2592,29 +2590,39 @@ class MainWindow(QMainWindow):
             pass
 
     def _reload_all_camera_lists(self, exclude=None):
-        """(2.2.10) بازخوانی لیست دوربین‌ها در همه‌ی پنجره‌ها (اصلی + نماها)."""
-        panels = [self.left_panel]
+        """(2.2.10) بازخوانی لیست دوربین‌ها در همه‌ی پنجره‌ها (اصلی + نماها).
+
+        گارد reentrancy: چون LeftPanelWidget.reload_camera_list خودش این متد
+        را صدا می‌زند، بدون گارد بازگشت بی‌نهایت رخ می‌دهد.
+        """
+        if getattr(self, '_reloading_camera_lists', False):
+            return
+        self._reloading_camera_lists = True
         try:
-            mgr = getattr(self, 'monitor_room_manager', None)
-            if mgr:
-                for w in getattr(mgr, 'windows', []):
-                    try:
-                        lp = getattr(w, 'left_panel', None)
-                        if lp is not None and lp is not exclude:
-                            panels.append(lp)
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-        for p in panels:
-            if p is exclude:
-                continue
+            panels = [self.left_panel]
             try:
-                # صدا زدن مستقیم متد ویجت (نه delegate) تا حلقه بی‌نهایت نشود
-                from side_panels import LeftPanelWidget
-                LeftPanelWidget.reload_camera_list(p)
+                mgr = getattr(self, 'monitor_room_manager', None)
+                if mgr:
+                    for w in getattr(mgr, 'windows', []):
+                        try:
+                            lp = getattr(w, 'left_panel', None)
+                            if lp is not None and lp is not exclude:
+                                panels.append(lp)
+                        except Exception:
+                            pass
             except Exception:
                 pass
+            for p in panels:
+                if p is exclude:
+                    continue
+                try:
+                    # صدا زدن مستقیم متد ویجت (نه delegate) تا حلقه بی‌نهایت نشود
+                    from side_panels import LeftPanelWidget
+                    LeftPanelWidget.reload_camera_list(p)
+                except Exception:
+                    pass
+        finally:
+            self._reloading_camera_lists = False
 
     def _apply_license_title(self):
         """به‌روزرسانی عنوان پنجره بر اساس وضعیت فعلی لایسنس."""
@@ -3304,56 +3312,22 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------- camera list ---
 
         # (2.0.15-beta) نشان پایداری شبکه روی هر دوربین (از آخرین اسکن)
-    def _net_badge(self, cam):
-        q = (cam or {}).get("net_quality", "")
-        kbps = (cam or {}).get("net_kbps")
-        rtt = (cam or {}).get("net_rtt_ms")
-        if not q:
-            return "", None
-        icon = {"خوب": "📶", "متوسط": "📶", "ضعیف": "⚠️", "قطع": "⛔",
-                "نامشخص": "❓"}.get(q, "📶")
-        color = {"خوب": "#2ecc71", "متوسط": "#f1c40f", "ضعیف": "#e67e22",
-                 "قطع": "#e74c3c", "نامشخص": "#95a5a6"}.get(q)
-        tip = "آخرین اسکن شبکه: %s" % q
-        if isinstance(kbps, (int, float)):
-            tip += f" (~{kbps:.0f} کیلوبیت/ثانیه)"
-        if isinstance(rtt, (int, float)):
-            tip += f" (تاخیر {rtt:.0f}ms)"
-        return f"  {icon}{q}", (color, tip)
+    def _net_badge(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, '_net_badge')(*args, **kwargs)
 
     # (2.0.15-beta) اسکن پهنای باند/پایداری شبکه‌ی دوربین‌ها
     def _on_network_probe_clicked(self, *args, **kwargs):
         """(2.2.10) delegate به LeftPanelWidget."""
         return getattr(self.left_panel, '_on_network_probe_clicked')(*args, **kwargs)
 
-    def _on_probe_done(self, cam_id, res):
-        cam = self.camera_store.get_camera(cam_id)
-        if cam is None or not isinstance(res, dict):
-            return
-        cam["net_rtt_ms"] = res.get("rtt_ms")
-        kbps = res.get("kbps")
-        cam["net_kbps"] = round(kbps, 1) if isinstance(kbps, (int, float)) else None
-        cam["net_quality"] = res.get("quality") or "نامشخص"
-        cam["net_checked_at"] = res.get("checked_at")
+    def _on_probe_done(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, '_on_probe_done')(*args, **kwargs)
 
-    def _on_probe_finished(self):
-        try:
-            self.camera_store.save()
-        except Exception:
-            pass
-        self._net_probe_thread = None
-        self.net_probe_btn.setEnabled(True)
-        self.net_probe_btn.setText("📶 تست پایداری شبکه")
-        self.reload_camera_list()
-        try:
-            quals = [c.get("net_quality", "?") for c in self.camera_store.cameras]
-            summary = ", ".join(f"{q}: {quals.count(q)}" for q in
-                                ("خوب", "متوسط", "ضعیف", "قطع", "نامشخص")
-                                if quals.count(q))
-            QMessageBox.information(self, "تست پایداری شبکه",
-                                    "اسکن تمام شد.\n" + (summary or "نتیجه‌ای ثبت نشد."))
-        except Exception:
-            pass
+    def _on_probe_finished(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, '_on_probe_finished')(*args, **kwargs)
 
     def _make_camera_tree_item(self, *args, **kwargs):
         """(2.2.10) delegate به LeftPanelWidget."""
@@ -3389,27 +3363,9 @@ class MainWindow(QMainWindow):
         """(2.2.10) delegate به LeftPanelWidget."""
         return getattr(self.left_panel, 'open_add_nvr_dialog')(*args, **kwargs)
 
-    def _add_channel_from_entry(self, nvr, entry, default_name):
-        camera_ip = entry.get("camera_ip") or ""
-        if entry["is_full_url"]:
-            # ONVIF: خودِ URL کشف‌شده معمولاً از قبل مستقیماً به IP دوربین
-            # اشاره می‌کند (رجوع کنید به nvr_scanner._extract_camera_ip_from_uri).
-            return self.camera_store.add_channel_camera(
-                nvr, entry["channel"], default_name, path="", full_url=entry["path_or_url"],
-                camera_ip=camera_ip,
-            )
-        if camera_ip and entry.get("direct"):
-            # رفع درخواست: این کانال با یک مسیر واقعاً تست‌شده روی خودِ
-            # دوربین تایید شده (نه پروکسی NVR که خطا می‌داد)؛ دقیقاً مثل
-            # افزودن یک دوربین تکی، مستقیماً به همان IP/پورت ۵۵۴ دوربین وصل
-            # می‌شویم - در حالی که کانال همچنان زیر همین NVR در لیست می‌ماند.
-            return self.camera_store.add_channel_camera(
-                nvr, entry["channel"], default_name, path=entry["path_or_url"],
-                camera_ip=camera_ip, connect_ip=camera_ip, connect_port="554",
-            )
-        return self.camera_store.add_channel_camera(
-            nvr, entry["channel"], default_name, path=entry["path_or_url"], camera_ip=camera_ip,
-        )
+    def _add_channel_from_entry(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, '_add_channel_from_entry')(*args, **kwargs)
 
     def rescan_nvr(self, *args, **kwargs):
         """(2.2.10) delegate به LeftPanelWidget."""
@@ -3726,88 +3682,25 @@ class MainWindow(QMainWindow):
         """(2.2.10) delegate به LeftPanelWidget."""
         return getattr(self.left_panel, 'on_add_selected_scan_results')(*args, **kwargs)
 
-    def _start_device_detect(self, ip):
-        # رفع درخواست: دیگر از کاربر «دوربین تکی یا NVR؟» پرسیده نمی‌شود؛
-        # DeviceDetectThread با یک اتصال آزمایشی (ONVIF یا تست کانال‌ها)
-        # خودش نوع دستگاه را تشخیص می‌دهد - رجوع کنید به device_detect.py.
-        self._detect_ip = ip
-        self.scan_result_list.setEnabled(False)
-        self.add_selected_scan_btn.setEnabled(False)
-        self.detect_status_label.setText(f"در حال تشخیص نوع دستگاه {ip}...")
+    def _start_device_detect(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, '_start_device_detect')(*args, **kwargs)
 
-        # رفع درخواست: تشخیص نوع دستگاه (و در ادامه، اتصال به دوربین/NVR) با
-        # نام‌کاربری/رمز کادر بالای پنل اسکن شبکه انجام می‌شود، نه مقدار ثابت
-        # admin/بدون‌رمز.
-        scan_user, scan_pass = self._scan_credentials()
-        self.detect_thread = DeviceDetectThread(
-            ip=ip,
-            open_ports=self._scan_ports_by_ip.get(ip, []),
-            rtsp_port="554",
-            user=scan_user,
-            pwd=scan_pass,
-            parent=self,
-        )
-        self.detect_thread.progress_signal.connect(self.detect_status_label.setText)
-        self.detect_thread.detected_signal.connect(self._on_device_detected)
-        self.detect_thread.failed_signal.connect(self._on_device_detect_failed)
-        self.detect_thread.start()
+    def _reset_detect_ui(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, '_reset_detect_ui')(*args, **kwargs)
 
-    def _reset_detect_ui(self):
-        self.scan_result_list.setEnabled(True)
-        self.detect_status_label.setText("")
+    def _advance_detect_queue(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, '_advance_detect_queue')(*args, **kwargs)
 
-    def _advance_detect_queue(self):
-        """بعد از بسته‌شدن دیالوگ دستگاه فعلی، اگر مورد دیگری در صفِ انتخاب
-        چندتایی باقی مانده، تشخیص آن را شروع می‌کند."""
-        if self._detect_queue:
-            next_ip = self._detect_queue.pop(0)
-            self._start_device_detect(next_ip)
-        else:
-            self.add_selected_scan_btn.setEnabled(True)
+    def _on_device_detected(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, '_on_device_detected')(*args, **kwargs)
 
-    def _on_device_detected(self, kind, payload):
-        ip = self._detect_ip
-        self._reset_detect_ui()
-        scan_user, scan_pass = self._scan_credentials()
-        if kind == "nvr":
-            self.open_add_nvr_dialog(
-                prefill_ip=ip,
-                detected_brand=payload.get("brand"),
-                detected_onvif_port=payload.get("onvif_port"),
-                prefill_user=scan_user,
-                prefill_pass=scan_pass,
-            )
-        else:
-            self.open_add_camera_dialog(
-                prefill_ip=ip,
-                detected_path=payload.get("path"),
-                detected_full_url=payload.get("full_url"),
-                prefill_user=scan_user,
-                prefill_pass=scan_pass,
-            )
-        self._advance_detect_queue()
-
-    def _on_device_detect_failed(self, msg):
-        ip = self._detect_ip
-        self._reset_detect_ui()
-
-        # تشخیص خودکار با نام کاربری/رمز پیش‌فرض (admin/بدون رمز) ممکن است روی
-        # دستگاه‌هایی با اطلاعات ورود سفارشی شکست بخورد؛ در این حالت کاربر
-        # می‌تواند به‌صورت دستی و با وارد کردن رمز درست، نوع دستگاه را انتخاب کند.
-        box = QMessageBox(self)
-        box.setWindowTitle("تشخیص خودکار ناموفق بود")
-        box.setText(f"{msg}\n\nنوع دستگاه {ip} را به‌صورت دستی مشخص کنید:")
-        camera_btn = box.addButton("دوربین تکی", QMessageBox.ButtonRole.AcceptRole)
-        nvr_btn = box.addButton("NVR (چند کاناله)", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("انصراف", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
-
-        scan_user, scan_pass = self._scan_credentials()
-        if box.clickedButton() == camera_btn:
-            self.open_add_camera_dialog(prefill_ip=ip, prefill_user=scan_user, prefill_pass=scan_pass)
-        elif box.clickedButton() == nvr_btn:
-            self.open_add_nvr_dialog(prefill_ip=ip, prefill_user=scan_user, prefill_pass=scan_pass)
-        self._advance_detect_queue()
+    def _on_device_detect_failed(self, *args, **kwargs):
+        """(2.2.10) delegate به LeftPanelWidget."""
+        return getattr(self.left_panel, '_on_device_detect_failed')(*args, **kwargs)
 
     # ------------------------------------------------------ live view -----
 
@@ -5158,13 +5051,17 @@ class MainWindow(QMainWindow):
         self.camera_grid.stop_all()
         # جلوگیری از کرش هنگام بستن برنامه در حین اسکن شبکه/تشخیص نوع دستگاه:
         # Qt هنگام تخریب یک QThread که هنوز در حال اجراست، کرش می‌کند.
-        if self.network_scan_thread is not None and self.network_scan_thread.isRunning():
-            self.network_scan_thread.wait(3000)
-        if self.detect_thread is not None and self.detect_thread.isRunning():
-            self.detect_thread.cancel()
-            self.detect_thread.wait(3000)
+        # (2.2.10) تردها بعد از ریفکتور روی left_panel هستند
+        _lp = getattr(self, 'left_panel', None)
+        _scan_thread = getattr(_lp, 'network_scan_thread', None) if _lp else None
+        if _scan_thread is not None and _scan_thread.isRunning():
+            _scan_thread.wait(3000)
+        _detect_thread = getattr(_lp, 'detect_thread', None) if _lp else None
+        if _detect_thread is not None and _detect_thread.isRunning():
+            _detect_thread.cancel()
+            _detect_thread.wait(3000)
         # (2.0.15-beta) ترد اسکن پایداری شبکه هم باید صریحاً متوقف شود.
-        _probe = getattr(self, "_net_probe_thread", None)
+        _probe = getattr(_lp, "_net_probe_thread", None) if _lp else None
         if _probe is not None and _probe.isRunning():
             try:
                 _probe.stop()
