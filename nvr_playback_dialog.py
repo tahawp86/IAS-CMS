@@ -252,16 +252,18 @@ class NVRPlaybackDialog(QDialog):
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
 
+    # سازگاری با تست test_216_beta (الگوی توقف امن ترد)
+    @property
+    def _thread(self):
+        return self.widget._thread
+
+    def _stop_thread(self):
+        self.widget._stop_thread()
+
     def reject(self):
-        try:
-            self.widget.stop()
-        except Exception:
-            pass
+        self._stop_thread()
         super().reject()
 
     def closeEvent(self, event):
-        try:
-            self.widget.stop()
-        except Exception:
-            pass
+        self._stop_thread()
         super().closeEvent(event)

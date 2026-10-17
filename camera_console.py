@@ -17,8 +17,8 @@
 import time
 
 import cv2
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QImage, QPainter, QColor, QPen
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint
+from PyQt6.QtGui import QImage, QPainter, QColor, QPen, QPolygon
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLabel,
     QPushButton, QGroupBox, QCheckBox, QListWidget, QListWidgetItem,
@@ -83,8 +83,16 @@ class _LiveWorker(QThread):
                 time.sleep(3.0)
 
     def stop(self):
+        # (بازبینی IVDagent) توقف امن: مثل _stop_thread در nvr_playback_dialog؛
+        # اگر ترد در cap.read() گیر کرده باشد (rw_timeout تا ~۵ ثانیه)،
+        # wait ساده تایم‌اوت می‌شود و تخریب QThread در حال اجرا = کرش qFatal.
         self._running = False
-        self.wait(3000)
+        try:
+            if self.isRunning() and not self.wait(7000):
+                self.terminate()
+                self.wait(3000)
+        except Exception:
+            pass
 
 
 class ConsoleLiveWidget(QWidget):
@@ -267,15 +275,9 @@ class ConsoleLiveWidget(QWidget):
             pen = QPen(QColor("#e74c3c"), 2)
             p.setPen(pen)
             for pts in self._zones:
-                qpts = []
-                for (nx, ny) in pts:
-                    qpts.append(p.drawPoint(int(ox + nx * dw), int(oy + ny * dh)))
-                # چندضلعی
-                from PyQt6.QtCore import QPoint
                 poly = [QPoint(int(ox + nx * dw), int(oy + ny * dh))
                         for (nx, ny) in pts]
                 if len(poly) >= 3:
-                    from PyQt6.QtGui import QPolygon
                     p.drawPolygon(QPolygon(poly))
             # مستطیل در حال رسم
             if self._draw_mode and self._draw_start and self._draw_cur:
@@ -372,9 +374,6 @@ class CameraConsoleDialog(QDialog):
         scroll.setWidget(panel)
         main_lay.addWidget(scroll, 1)
 
-        # شروع پخش زنده
-        self._start_live()
-
     def _build_live_grid(self, n):
         """ساخت گرید نمای زنده (۱ یا ۴ تایل)."""
         for t in self.live_tiles:
@@ -395,6 +394,8 @@ class CameraConsoleDialog(QDialog):
         # تایل اول: دوربین اصلی؛ بقیه: خالی (کاربر از کمبو انتخاب می‌کند)
         if self.live_tiles:
             self._start_live()
+            # (بازبینی IVDagent) زون‌های رسم‌شده را روی تایل تازه هم نشان بده
+            self.live_widget.set_zones(self.cam.get("regions") or [])
             if n > 1 and self.camera_store:
                 self._add_tile_pickers()
 
