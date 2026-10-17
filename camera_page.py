@@ -27,7 +27,8 @@ class CameraPageWidget(QWidget):
         self._floor_detect_thread = None
 
         # از main.py ایمپورت می‌شود تا چرخه‌ی ایمپورت پیش نیاید
-        from main import CameraGridWidget, _NoMinWidthRow
+        from main import (CameraGridWidget, _NoMinWidthRow,
+                          _get_floor_detect_thread, RegionManagerDialog)
 
         page_lay = QVBoxLayout(self)
         page_lay.setContentsMargins(0, 0, 0, 0)
