@@ -163,7 +163,6 @@ class NVRPlaybackDialog(QDialog):
 
         # برای fallback وب
         self._nvr = dict(nvr) if nvr else {}
-        self._start_dt = start_dt
 
         candidates = build_playback_urls(nvr, channel, start_dt, end_dt)
         self._thread = _PlaybackThread(nvr, channel, start_dt, end_dt,
