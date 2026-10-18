@@ -734,9 +734,11 @@ jobs:
         path: dist/manifest.json
         if-no-files-found: warn
 
-    # اتصال «فایل آپدیت» به GitHub Release — خودکار وقتی تگ v* پوش می‌شود
+    # اتصال «فایل آپدیت» + «فایل نصب» به GitHub Release — خودکار وقتی تگ v* پوش می‌شود
     # (1.0.0) انتشار خودکار: روی push به main هم Release ساخته می‌شود —
     # دیگر لازم نیست تیک publish_release را دستی بزنید.
+    # (2.2.12) علاوه بر فایل آپدیت، فایل Setup.exe هم به ریلیز اضافه می‌شود
+    # تا کاربر بتواند نصب کامل را هم از صفحه‌ی ریلیز دانلود کند.
     # آپدیت خودکار برنامه (update_checker.py) نسخه‌ی جدید را از لیست
     # Releaseها می‌خواند؛ بدون این قدم، هشدار آپدیت هیچ‌وقت نمی‌آید.
     # اگر Release آن نسخه از قبل ساخته شده باشد، فقط فایل جایگزین می‌شود.
@@ -768,3 +770,11 @@ jobs:
           gh release upload $tag $zip.FullName --clobber
         }
         Write-Host "OK: $($zip.Name) -> release $tag"
+        # (2.2.12) فایل نصب کامل هم به ریلیز اضافه می‌شود
+        $setup = Get-ChildItem "dist/IAS-CMS-Setup-*.exe" | Select-Object -First 1
+        if ($setup) {
+          gh release upload $tag $setup.FullName --clobber
+          Write-Host "OK: $($setup.Name) -> release $tag"
+        } else {
+          Write-Host "WARNING: Setup.exe not found in dist; release has only the update file."
+        }
