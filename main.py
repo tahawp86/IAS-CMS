@@ -3913,8 +3913,8 @@ class MainWindow(QMainWindow):
             f"font-size: 10px; color: {TEXT_MUTED}; padding: 4px 8px;"
         )
         header_layout.addWidget(ver_label)
-        # (2.0.72-beta) دکمه‌ی «آپدیت جدید» — فقط برای ادمین، فقط وقتی
-        # Release جدیدی با فایل آپدیت پیدا شود (پیش‌فرض مخفی).
+        # (2.2.14) دکمه‌ی «آپدیت جدید» — برای همه‌ی کاربران (ادمین و User)،
+        # فقط وقتی Release جدیدی با فایل آپدیت پیدا شود (پیش‌فرض مخفی).
         self.header_update_btn = QPushButton("⬆️ آپدیت جدید!")
         self.header_update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.header_update_btn.setVisible(False)
@@ -3941,11 +3941,7 @@ class MainWindow(QMainWindow):
         return header
 
     def _on_apply_update(self):
-        """باز کردن دیالوگ انتخاب و اعمال «فایل آپدیت» (فقط ادمین)."""
-        if not self._is_admin():
-            QMessageBox.warning(self, "دسترسی",
-                                "اعمال آپدیت فقط برای ادمین مجاز است.")
-            return
+        """باز کردن دیالوگ انتخاب و اعمال «فایل آپدیت» (همه‌ی کاربران)."""
         try:
             from updater import show_apply_update_dialog
             show_apply_update_dialog(parent=self)
@@ -4044,9 +4040,6 @@ class MainWindow(QMainWindow):
                        if self._has_access(k)]
             if allowed and getattr(self, "_current_page_key", "home") not in allowed:
                 self.show_page(allowed[0])
-            if not is_admin:
-                self.header_update_btn.setVisible(False)
-                self._hide_update_toast()
         except Exception:
             pass
 
@@ -4114,7 +4107,7 @@ class MainWindow(QMainWindow):
             "🔍 در حال بررسی آپدیت جدید…\nاگر نسخه‌ی جدیدی منتشر شده باشد، هشدار آن نمایش داده می‌شود.")
 
     def _on_update_check_result(self, info):
-        if not info or not self._is_admin() or not self._auto_check_enabled():
+        if not info or not self._auto_check_enabled():
             return
         ver = info.get("version", "")
         if not ver:
@@ -4204,12 +4197,8 @@ class MainWindow(QMainWindow):
         self._download_and_apply_update(info)
 
     def _download_and_apply_update(self, info):
-        """دانلود خودکار فایل آپدیت + اعتبارسنجی + اعمال (فقط ادمین)."""
+        """دانلود خودکار فایل آپدیت + اعتبارسنجی + اعمال (همه‌ی کاربران)."""
         from PyQt6.QtWidgets import QProgressDialog
-        if not self._is_admin():
-            QMessageBox.warning(self, "دسترسی",
-                                "نصب آپدیت فقط برای ادمین مجاز است.")
-            return
         ver = info.get("version", "")
         notes = (info.get("notes", "") or "").strip()
         msg = f"آپدیت جدید v{ver} منتشر شده است.\n\n"
