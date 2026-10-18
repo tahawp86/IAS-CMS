@@ -31,8 +31,9 @@ USERS_FILE = os.path.join(_DATA_DIR, "users.json")
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "A12345678a"
 
-# کاربر تست پیش‌فرض (درخواست طه، 2026-09-29) — فقط صفحه‌ی اصلی و تنظیمات.
-DEFAULT_TEST_USER = "Test"
+# کاربر پیش‌فرض استاندارد (قبلاً «Test» بود — 2.2.11 به «User» تغییر نام داد)
+# فقط صفحه‌ی اصلی و تنظیمات.
+DEFAULT_TEST_USER = "User"
 DEFAULT_TEST_PASS = "123456"
 TEST_USER_PAGES = ("home", "settings")
 
@@ -147,12 +148,17 @@ class UserManager:
         return True
 
     def ensure_test_user(self):
-        """اطمینان از وجود کاربر Test با دسترسی فقط به صفحه‌ی اصلی و تنظیمات.
+        """اطمینان از وجود کاربر User با دسترسی فقط به صفحه‌ی اصلی و تنظیمات.
 
+        (2.2.11) نام کاربر از «Test» به «User» تغییر کرد؛ اگر رکورد قدیمی
+        «Test» وجود داشت به «User» مهاجرت می‌کند (رمز و تنظیمات حفظ می‌شود).
         اگر کاربر وجود نداشت با رمز پیش‌فرض (123456) ساخته می‌شود؛ اگر وجود
         داشت رمزش دست نمی‌خورد ولی سطح دسترسی‌اش همیشه به home+settings
         محدود می‌ماند (is_admin هم False می‌شود).
         """
+        # مهاجرت از نام قدیمی
+        if "Test" in self.users and DEFAULT_TEST_USER not in self.users:
+            self.users[DEFAULT_TEST_USER] = self.users.pop("Test")
         rec = self.users.get(DEFAULT_TEST_USER)
         changed = False
         if rec is None:
