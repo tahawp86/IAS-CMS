@@ -41,12 +41,13 @@ class SettingsPage(QWidget):
         self.set_admin_mode(self._is_admin)
 
     def set_admin_mode(self, is_admin):
-        """(2.0.72-beta) حالت ادمین: «لایسنس» و «مدیریت کاربران» فقط برای
-        ادمین دیده می‌شوند (لایسنس هرگز سطح‌بندی نمی‌شود)."""
+        """(2.0.72-beta) حالت ادمین: «مدیریت کاربران» فقط برای ادمین دیده
+        می‌شود. (2.2.13) «لایسنس» برای همه دیده می‌شود — به دستور طه، کاربر
+        User هم باید بتواند فایل لایسنس را از تنظیمات بارگذاری کند."""
         self._is_admin = bool(is_admin)
         try:
             if self._license_group is not None:
-                self._license_group.setVisible(self._is_admin)
+                self._license_group.setVisible(True)
             if self._users_group is not None:
                 self._users_group.setVisible(self._is_admin)
         except Exception:
