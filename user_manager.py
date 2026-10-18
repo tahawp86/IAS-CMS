@@ -157,10 +157,11 @@ class UserManager:
         محدود می‌ماند (is_admin هم False می‌شود).
         """
         # مهاجرت از نام قدیمی
+        changed = False
         if "Test" in self.users and DEFAULT_TEST_USER not in self.users:
             self.users[DEFAULT_TEST_USER] = self.users.pop("Test")
+            changed = True  # (بازبینی IVDagent) بدون این، save صدا زده نمی‌شود
         rec = self.users.get(DEFAULT_TEST_USER)
-        changed = False
         if rec is None:
             rec = _blank_user(DEFAULT_TEST_USER, is_admin=False)
             salt, h = hash_password(DEFAULT_TEST_PASS)
