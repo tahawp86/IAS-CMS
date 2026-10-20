@@ -126,6 +126,24 @@ class LoginDialog(QDialog):
         self.err_lbl.setVisible(False)
         lay.addWidget(self.err_lbl)
 
+        # (2.2.16) فاز ۲ لایسنس: بارگذاری فایل لایسنس از همین صفحه‌ی ورود
+        # هم ممکن است (بخش تنظیمات سر جایش می‌ماند). اگر فایل لایسنس
+        # حساب کاربر (app_user) داشته باشد، ورود با همان نام/رمز داخل
+        # فایل انجام می‌شود.
+        self.license_changed = False
+        self.lic_status_lbl = QLabel("")
+        self.lic_status_lbl.setStyleSheet("color: #888; font-size: 11px;")
+        self.lic_status_lbl.setWordWrap(True)
+        lay.addWidget(self.lic_status_lbl)
+        lic_row = QHBoxLayout()
+        self.lic_btn = QPushButton("📂 بارگذاری فایل لایسنس…")
+        self.lic_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lic_btn.clicked.connect(self._on_license_upload)
+        lic_row.addWidget(self.lic_btn)
+        lic_row.addStretch()
+        lay.addLayout(lic_row)
+        self._refresh_license_status()
+
         row = QHBoxLayout()
         row.addStretch()
         login_btn = QPushButton("🔓 ورود")
@@ -138,9 +156,73 @@ class LoginDialog(QDialog):
         row.addWidget(cancel_btn)
         lay.addLayout(row)
 
+    def _refresh_license_status(self):
+        """نمایش وضعیت لایسنس نصب‌شده زیر فرم ورود."""
+        text = ""
+        try:
+            from license import load_license, app_user_state
+            st = load_license()
+            if not st.valid:
+                text = ("🔑 لایسنس معتبر نصب نشده است — برنامه در حالت "
+                        "محدود اجرا می‌شود.")
+            else:
+                cust = st.customer or "—"
+                aus = app_user_state(st.payload or {})
+                if aus == "valid":
+                    text = (f"🔑 لایسنس: {cust} — ورود با نام کاربری و "
+                            "رمز داخل فایل لایسنس فعال است.")
+                elif aus == "malformed":
+                    text = (f"🔑 لایسنس: {cust} — ⚠️ بخش حساب کاربر فایل "
+                            "لایسنس معیوب است.")
+                else:
+                    text = f"🔑 لایسنس: {cust}"
+        except Exception:
+            text = ""
+        try:
+            self.lic_status_lbl.setText(text)
+        except Exception:
+            pass
+
+    def _on_license_upload(self):
+        """انتخاب + نصب فایل لایسنس (اعتبارسنجی امضا قبل از نصب)."""
+        from PyQt6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "انتخاب فایل لایسنس", "",
+            "فایل لایسنس (*.lic);;همه‌ی فایل‌ها (*)")
+        if not path:
+            return
+        try:
+            from license import install_license_file
+            install_license_file(path)
+        except Exception as e:
+            QMessageBox.warning(self, "لایسنس",
+                                f"فایل لایسنس پذیرفته نشد:\n{e}")
+            return
+        self.license_changed = True
+        self._refresh_license_status()
+        QMessageBox.information(self, "لایسنس", "✅ فایل لایسنس نصب شد.")
+
     def _on_login(self):
         username = self.user_edit.text().strip()
         password = self.pass_edit.text()
+        # (2.2.16) ورود با حساب داخل فایل لایسنس: اگر نام واردشده نام
+        # کاربریِ حساب لایسنس باشد، فقط فایل لایسنس تصمیم می‌گیرد
+        # (fail-closed — fallback به کاربر محلی هم‌نام نداریم).
+        try:
+            from license import try_license_login
+            decides, lic_user = try_license_login(username, password)
+        except Exception:
+            decides, lic_user = False, None
+        if decides:
+            if lic_user is None:
+                self.err_lbl.setText("⚠️ نام‌کاربری یا رمز عبور اشتباه است.")
+                self.err_lbl.setVisible(True)
+                self.pass_edit.clear()
+                self.pass_edit.setFocus()
+                return
+            self.user = lic_user
+            self.accept()
+            return
         user = self.manager.verify(username, password)
         if not user:
             self.err_lbl.setText("⚠️ نام‌کاربری یا رمز عبور اشتباه است.")

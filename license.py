@@ -65,6 +65,225 @@ RESTRICTED_FEATURES = {
 
 
 # ----------------------------------------------------------------------------
+# اسکیمای v2 — feature_config یکپارچه. این بخش همگام با مرجع مشترک
+# (license_common.py صادرکننده + docs/LICENSE_SCHEMA.md) نگه داشته می‌شود؛
+# خواننده‌ها قابلیت‌ها را فقط از همین مسیر می‌خوانند تا رفتار همه‌ی
+# پلتفرم‌ها (ویندوز/مک) یکی باشد.
+# ----------------------------------------------------------------------------
+
+# رجیستری کانونیکال قابلیت‌ها (به همان ترتیب سند اسکیما)
+FEATURE_KEYS = ["cameras", "plate", "fire", "person_tracking",
+                "face_recognition", "region_alert", "people_counting"]
+
+# نگاشت کلیدهای قدیمی (v1) به کلید کانونیکال — فقط برای خواندن/مهاجرت
+LEGACY_ALIASES = {
+    "zone_alerts": "region_alert",   # تیک قدیمی «هشدار ورود به محدوده»
+}
+
+
+def _norm_entry(v) -> tuple:
+    """نرمال‌سازی یک ورودی feature_config به (enabled, count)."""
+    if isinstance(v, dict):
+        enabled = bool(v.get("enabled", True))
+        try:
+            count = max(0, int(v.get("count", 0) or 0))
+        except (TypeError, ValueError):
+            count = 0
+        return enabled, count
+    if isinstance(v, (tuple, list)) and len(v) >= 2:
+        try:
+            return bool(v[0]), max(0, int(v[1] or 0))
+        except (TypeError, ValueError):
+            return bool(v[0]), 0
+    if isinstance(v, bool):
+        return v, 0
+    return True, 0
+
+
+def migrate_v1_to_v2(payload: dict) -> dict:
+    """مهاجرت payload قدیمی (v1) به feature_config کانونیکال — برای خواننده‌ها."""
+    quotas = payload.get("quotas") or {}
+    qe = payload.get("quota_enabled") or {}
+    feats = payload.get("features") or {}
+    fc = {}
+    for key in FEATURE_KEYS:
+        try:
+            count = max(0, int(quotas.get(key, 0)))
+        except (TypeError, ValueError):
+            count = 0
+        enabled = bool(qe.get(key, True))
+        if key == "cameras":
+            enabled = True
+        fc[key] = {"enabled": enabled, "count": count}
+    # تیک‌های flat قدیمی (people_counting/face_recognition/zone_alerts):
+    # خاموش بودن هرکدام یعنی قابلیت کانونیکال متناظر خاموش است (فقط
+    # خاموش می‌کنند، هرگز چیزی را روشن نمی‌کنند).
+    for legacy_key, v in feats.items():
+        canon = LEGACY_ALIASES.get(legacy_key, legacy_key)
+        if canon in fc and not v:
+            fc[canon]["enabled"] = False
+    return fc
+
+
+def normalize_features(payload: dict) -> dict:
+    """خروجی یکدست برای خواننده‌ها در هر دو نسخه: {key: {"enabled", "count"}}.
+
+    کلید غایب در فایل v2 یعنی «فعال + نامحدود» (پیش‌فرض (True, 0)).
+    """
+    if isinstance(payload, dict) and payload.get("schema_version", 1) >= 2 \
+            and isinstance(payload.get("feature_config"), dict):
+        fc = {}
+        for key in FEATURE_KEYS:
+            enabled, count = _norm_entry(
+                payload["feature_config"].get(key, (True, 0)))
+            if key == "cameras":
+                enabled = True
+            fc[key] = {"enabled": enabled, "count": count}
+        return fc
+    return migrate_v1_to_v2(payload or {})
+
+
+def feature_enabled(fc: dict, key: str) -> bool:
+    """آیا این قابلیت در لایسنس فعال است؟ (نمایش دکمه‌ی صفحه + گیت دسترسی)"""
+    return bool((fc or {}).get(key, {}).get("enabled", False))
+
+
+def feature_count(fc: dict, key: str) -> int:
+    """سقف تعداد دوربین این قابلیت؛ ۰ یعنی نامحدود."""
+    try:
+        return max(0, int((fc or {}).get(key, {}).get("count", 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def effective_feature_count(fc: dict, key: str) -> int:
+    """سقف مؤثر یک قابلیت: کمینه‌ی سقف خودش و سقف کل دوربین‌ها؛
+    ۰ یعنی نامحدود (قانون سقف اسکیمای v2)."""
+    c = feature_count(fc, key)
+    if key == "cameras":
+        return c
+    cam = feature_count(fc, "cameras")
+    if c == 0:
+        return cam
+    if cam == 0:
+        return c
+    return min(c, cam)
+
+
+def restricted_feature_config() -> dict:
+    """feature_config حالت محدود (بدون لایسنس معتبر): هم‌راستا با
+    RESTRICTED_FEATURES — فقط شمارش افراد فعال است."""
+    fc = {k: {"enabled": False, "count": 0} for k in FEATURE_KEYS}
+    fc["cameras"] = {"enabled": True, "count": 0}
+    fc["people_counting"] = {"enabled": True, "count": 0}
+    return fc
+
+
+def effective_feature_config(state=None) -> dict:
+    """feature_config مؤثر: از لایسنس معتبر (v1 یا v2)، وگرنه حالت محدود."""
+    st = state or load_license()
+    if st.valid and isinstance(getattr(st, "payload", None), dict):
+        return normalize_features(st.payload)
+    return restricted_feature_config()
+
+
+# ----------------------------------------------------------------------------
+# حساب کاربر برنامه (app_user) — فیلد اختیاری داخل payload، زیر همان امضا.
+# همگام با مرجع license_common.py (IAS-LicenseManager، سند اسکیما بخش ۳-ب):
+# رمز هرگز plaintext نیست؛ فقط هش PBKDF2-HMAC-SHA256 با salt تصادفی نگه
+# داشته می‌شود و پارامترهای هش از خود فایل خوانده می‌شوند.
+# ----------------------------------------------------------------------------
+APP_USER_ALGO = "pbkdf2-sha256"
+APP_USER_MIN_ITERATIONS = 100_000  # کف امنیتی خواننده — کمتر از این = بدفرم
+APP_USER_SALT_BYTES = 16
+
+
+def _app_user_valid(au) -> bool:
+    """اعتبارسنجی ساختاری app_user (بدون دانستن رمز)."""
+    if not isinstance(au, dict):
+        return False
+    if not isinstance(au.get("username"), str) or not au["username"].strip():
+        return False
+    if au.get("password_algo") != APP_USER_ALGO:
+        return False
+    it = au.get("password_iterations")
+    if not isinstance(it, int) or it < APP_USER_MIN_ITERATIONS:
+        return False
+    try:
+        salt = bytes.fromhex(au.get("password_salt") or "")
+        dk = bytes.fromhex(au.get("password_hash") or "")
+    except (TypeError, ValueError):
+        return False
+    return len(salt) >= APP_USER_SALT_BYTES and len(dk) >= 16
+
+
+def app_user_state(payload: dict) -> str:
+    """وضعیت app_user در payload: ‏"absent" | "valid" | "malformed".
+
+    - absent: فیلد نیست — لایسنس حسابی تحمیل نمی‌کند (رفتار قبلی ورود).
+    - valid: ساختار درست است و می‌شود باهاش ورود را راستی‌آزمایی کرد.
+    - malformed: فیلد هست ولی بدفرم است — ورود لایسنسی باید fail-closed
+      شود؛ بقیه‌ی لایسنس (feature_config و...) سر جایش معتبر می‌ماند.
+    """
+    if not isinstance(payload, dict) or payload.get("app_user") is None:
+        return "absent"
+    return "valid" if _app_user_valid(payload["app_user"]) else "malformed"
+
+
+def get_app_user(payload: dict):
+    """app_user معتبر payload یا None (غایب/بدفرم — تفکیک با app_user_state)."""
+    if app_user_state(payload) != "valid":
+        return None
+    return payload["app_user"]
+
+
+def verify_app_user(payload: dict, username: str, password: str) -> bool:
+    """راستی‌آزمایی نام کاربری/رمز در برابر app_user لایسنس.
+
+    پارامترهای هش (salt/تکرار) از خود فایل خوانده می‌شوند و مقایسه‌ی
+    نهایی constant-time است. برای app_user غایب یا بدفرم همیشه False.
+    """
+    import hashlib
+    import hmac
+    au = get_app_user(payload)
+    if au is None:
+        return False
+    if (username or "").strip() != au["username"]:
+        return False
+    salt = bytes.fromhex(au["password_salt"])
+    expected = bytes.fromhex(au["password_hash"])
+    dk = hashlib.pbkdf2_hmac("sha256", (password or "").encode("utf-8"),
+                             salt, au["password_iterations"], len(expected))
+    return hmac.compare_digest(dk, expected)
+
+
+def try_license_login(username: str, password: str, state=None):
+    """تصمیم ورود با حساب داخل فایل لایسنس (app_user).
+
+    برمی‌گرداند (decides, user):
+    - decides=True: نام واردشده همان نام کاربریِ حساب لایسنس است و فقط
+      فایل لایسنس تصمیم می‌گیرد (fail-closed)؛ user در صورت رمز درست یک
+      رکورد کاربر است وگرنه None — fallback به کاربر محلی هم‌نام نداریم.
+    - decides=False: لایسنس برای این نام حسابی ندارد (یا لایسنس معتبر
+      نیست)؛ مسیر عادی کاربران محلی ادامه پیدا می‌کند — از جمله ورود
+      ادمین بدون لایسنس.
+    """
+    st = state or load_license()
+    if not st.valid or not isinstance(getattr(st, "payload", None), dict):
+        return False, None
+    raw = st.payload.get("app_user")
+    raw_name = raw.get("username") if isinstance(raw, dict) else None
+    if not isinstance(raw_name, str) or not raw_name.strip():
+        return False, None
+    if (username or "").strip() != raw_name.strip():
+        return False, None
+    if verify_app_user(st.payload, username, password):
+        return True, {"username": raw_name.strip(), "is_admin": False,
+                      "license_user": True}
+    return True, None
+
+
+# ----------------------------------------------------------------------------
 # مسیرها
 # ----------------------------------------------------------------------------
 def _app_dirs():
@@ -185,7 +404,7 @@ def check_payload_validity(payload: dict):
 class LicenseState:
     def __init__(self, valid=False, customer="", issued="", expires="",
                  quotas=None, hwid=None, features=None, quota_enabled=None,
-                 error="", path=""):
+                 error="", path="", payload=None):
         self.valid = valid
         self.customer = customer
         self.issued = issued
@@ -202,6 +421,8 @@ class LicenseState:
             {k: True for k in QUOTA_ORDER}
         self.error = error
         self.path = path
+        # payload خام لایسنس معتبر (برای normalize_features اسکیمای v2)
+        self.payload = payload
 
     @property
     def days_left(self):
@@ -259,14 +480,20 @@ def load_license(path=None) -> LicenseState:
         features=features,
         quota_enabled=quota_enabled,
         path=p,
+        payload=payload,
     )
 
 
 def effective_quotas(state=None) -> dict:
-    """سهمیه‌های مؤثر برنامه: از لایسنس معتبر، وگرنه حالت محدود."""
+    """سهمیه‌های مؤثر برنامه: از لایسنس معتبر، وگرنه حالت محدود.
+
+    (2.2.16) از feature_config نرمال‌شده (اسکیمای v2) خوانده می‌شود و
+    قانون سقف اعمال می‌شود: سقف هر قابلیت از سقف کل دوربین‌ها بیشتر
+    نمی‌شود (۰ = نامحدود)."""
     st = state or load_license()
     if st.valid:
-        return dict(st.quotas)
+        fc = effective_feature_config(st)
+        return {k: effective_feature_count(fc, k) for k in QUOTA_ORDER}
     return dict(DEMO_QUOTAS)
 
 
@@ -275,7 +502,11 @@ def effective_features(state=None) -> dict:
     (فقط شمارش افراد)."""
     st = state or load_license()
     if st.valid:
-        return dict(st.features)
+        fc = effective_feature_config(st)
+        feats = {}
+        for k in FEATURE_ORDER:
+            feats[k] = feature_enabled(fc, LEGACY_ALIASES.get(k, k))
+        return feats
     return dict(RESTRICTED_FEATURES)
 
 
@@ -298,7 +529,7 @@ def is_quota_enabled(name: str, state=None) -> bool:
         st = state or load_license()
         if not st.valid:
             return False
-        return bool(st.quota_enabled.get(name, True))
+        return feature_enabled(effective_feature_config(st), name)
     except Exception:
         return True
 

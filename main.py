@@ -2460,6 +2460,20 @@ class CameraTreeWidget(QTreeWidget):
         drag.exec(Qt.DropAction.CopyAction)
 
 
+# (2.2.16) فاز ۲ لایسنس — نگاشت صفحه به کلید قابلیت اسکیمای v2
+# (docs/LICENSE_SCHEMA.md در IAS-LicenseManager). صفحه‌هایی که این‌جا
+# نیستند (home/reports/map/settings) کلید قابلیت ندارند و گیت صفحه‌ای
+# هم ندارند — هم‌رفتار با نسخه‌ی مک (نگاشت تأییدشده‌ی LICagent).
+PAGE_FEATURE_MAP = {
+    "fire": "fire",
+    "face": "face_recognition",
+    "region_alert": "region_alert",
+    "people_counting": "people_counting",
+    "plate": "plate",
+    "person": "person_tracking",
+}
+
+
 class MainWindow(QMainWindow):
     # (2.0.72-beta) نتیجه‌ی بررسی آپدیت از ترد پس‌زمینه به ترد UI
     update_check_done = pyqtSignal(object)
@@ -2649,6 +2663,12 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._apply_license_title()
+        # (2.2.16) گیت صفحات لایسنس: بعد از بارگذاری لایسنس جدید،
+        # دکمه‌های صفحات بلافاصله و بدون ری‌استارت تازه شوند.
+        try:
+            self.apply_user_permissions()
+        except Exception:
+            pass
 
     def _show_startup_notices(self):
         """اعلان‌های شروع: هشدار لایسنس (در صورت نیاز) + تغییرات آپدیت."""
@@ -3961,7 +3981,8 @@ class MainWindow(QMainWindow):
         با متد refresh خودش تازه می‌کند."""
         # (2.0.72-beta) دفاع عمقی سطح دسترسی: حتی اگر دکمه‌ای به‌خطا دیده
         # شود، صفحه‌ی بدون دسترسی باز نمی‌شود.
-        if not self._has_access(key):
+        # (2.2.16) دفاع عمقی گیت لایسنس هم به همان شکل اعمال می‌شود.
+        if not self._has_access(key) or not self._license_allows_page(key):
             return
         # (2.0.53-beta) کلید صفحه‌ی فعلی برای دکمه‌ی «راهنما» نگه داشته
         # می‌شود تا PDF روی صفحه‌ی مربوط به همین صفحه باز شود.
@@ -4006,6 +4027,23 @@ class MainWindow(QMainWindow):
         except Exception:
             return True
 
+    def _license_allows_page(self, page_key):
+        """(2.2.16) گیت لایسنس صفحه (فاز ۲): صفحه‌های بدون کلید در
+        PAGE_FEATURE_MAP همیشه مجازند؛ بقیه فقط وقتی کلید قابلیت‌شان در
+        فایل لایسنس فعال است (بدون لایسنس معتبر = حالت محدود).
+        (فیکس fail-open) اگر خواندن/ارزیابی لایسنس به هر دلیلی خطا بدهد،
+        صفحه‌ی کلیددار بسته می‌ماند — deny-by-default، نه fail-open."""
+        feat_key = PAGE_FEATURE_MAP.get(page_key)
+        if not feat_key:
+            return True
+        try:
+            from license import effective_feature_config, feature_enabled
+            fc = effective_feature_config(
+                getattr(self, "license_state", None))
+            return bool(feature_enabled(fc, feat_key))
+        except Exception:
+            return False
+
     def _is_admin(self):
         if self.current_user is None:
             return True  # حالت توسعه/تست
@@ -4020,7 +4058,8 @@ class MainWindow(QMainWindow):
         try:
             user = self.current_user
             for key, btn in self.nav_buttons.items():
-                btn.setVisible(self._has_access(key))
+                btn.setVisible(self._has_access(key)
+                               and self._license_allows_page(key))
             is_admin = self._is_admin()
             try:
                 self.settings_page.set_admin_mode(is_admin)
@@ -4037,7 +4076,7 @@ class MainWindow(QMainWindow):
             allowed = [k for k in ("home", "fire", "face", "region_alert",
                                    "people_counting", "reports", "plate",
                                    "person", "map", "settings")
-                       if self._has_access(k)]
+                       if self._has_access(k) and self._license_allows_page(k)]
             if allowed and getattr(self, "_current_page_key", "home") not in allowed:
                 self.show_page(allowed[0])
         except Exception:
@@ -4052,6 +4091,10 @@ class MainWindow(QMainWindow):
             dlg = LoginDialog(mgr, parent=self)
             if dlg.exec() == QDialog.DialogCode.Accepted and dlg.user:
                 self.current_user = dlg.user
+                # (2.2.16) اگر در دیالوگ ورود لایسنس تازه‌ای نصب شده،
+                # وضعیت لایسنس و گیت صفحات همان لحظه تازه شوند.
+                if getattr(dlg, "license_changed", False):
+                    self.refresh_license_state()
                 self._update_notified_version = None
                 self._pending_update_info = None
                 self._hide_update_toast()
