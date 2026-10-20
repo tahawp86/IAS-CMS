@@ -229,7 +229,31 @@ class LoginDialog(QDialog):
             self.err_lbl.setVisible(True)
             self.pass_edit.clear()
             self.pass_edit.setFocus()
-            return
+            return        # (2.2.17) وقتی لایسنس معتبر حساب کاربر (app_user) سالم دارد،
+        # ورود با حساب پیش‌فرض محلی «User» بسته است تا حساب لایسنس دور
+        # زده نشود (عین مک). فقط همین حساب پیش‌فرض؛ ادمین و بقیه‌ی
+        # حساب‌های محلی دست‌نخورده‌اند. خطا در این چک هم fail-closed
+        # است (رد ورود).
+        if username == user_manager.DEFAULT_TEST_USER \
+                and not UserManager.is_admin(user):
+            try:
+                from license import load_license, app_user_state
+                _st = load_license()
+                _blocked = bool(
+                    _st.valid
+                    and app_user_state(_st.payload or {}) == "valid")
+            except Exception:
+                _blocked = True
+            if _blocked:
+                self.err_lbl.setText(
+                    "⚠️ این سیستم لایسنسِ دارای حساب کاربر دارد؛ ورود با "
+                    "حساب پیش‌فرض ممکن نیست. با نام کاربری و رمز داخل "
+                    "فایل لایسنس وارد شوید.")
+                self.err_lbl.setVisible(True)
+                self.pass_edit.clear()
+                self.pass_edit.setFocus()
+                return
+
         # تعویض اجباری رمز پیش‌فرض کارخانه
         if user.get("must_change_password"):
             dlg = ChangePasswordDialog(username, forced=True, parent=self)

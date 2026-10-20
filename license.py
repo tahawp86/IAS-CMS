@@ -278,8 +278,14 @@ def try_license_login(username: str, password: str, state=None):
     if (username or "").strip() != raw_name.strip():
         return False, None
     if verify_app_user(st.payload, username, password):
+        # (2.2.17) رکورد نشست باید permissions کامل داشته باشد؛ وگرنه
+        # UserManager.can_access برای کاربر لایسنسی همه‌ی صفحات را
+        # False می‌دهد. باز/بسته بودن هر صفحه را گیت لایسنس (فاز ۲)
+        # تصمیم می‌گیرد، نه این لایه — عین الگوی مک (license_session_user).
+        from user_manager import PAGE_KEYS
         return True, {"username": raw_name.strip(), "is_admin": False,
-                      "license_user": True}
+                      "license_user": True,
+                      "permissions": {k: True for k in PAGE_KEYS}}
     return True, None
 
 
