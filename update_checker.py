@@ -2,7 +2,7 @@
 """update_checker.py — بررسی خودکار آپدیت جدید از GitHub Releases (2.0.72-beta).
 
 مدل اعتماد:
-  * فقط HTTPS به api.github.com و github.com (ریپوی رسمی thaarfknight-star/IAS-CMS).
+  * فقط HTTPS به api.github.com و github.com (ریپوی رسمی tahawp86/IAS-CMS).
   * هشدار فقط وقتی نمایش داده می‌شود که یک Release رسمی، فایل
     «IAS-CMS-Update-vX.Y.Z.zip» را به‌عنوان asset داشته باشد.
   * فایل دانلودشده قبل از اعمال، با همان اعتبارسنجی updater.validate_update_zip
@@ -14,7 +14,7 @@ import os
 import re
 import urllib.request
 
-GITHUB_REPO = "thaarfknight-star/IAS-CMS"
+GITHUB_REPO = "tahawp86/IAS-CMS"
 # لیست Releaseها (نه /latest) — چون نسخه‌ها بتا هستند و GitHub نسخه‌ی
 # prerelease را در /releases/latest برنمی‌گرداند. در کد، draftها رد می‌شوند.
 RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases"

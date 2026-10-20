@@ -484,7 +484,7 @@ class SettingsPage(QWidget):
             "«GNU Affero General Public License» نسخه‌ی ۳ (یا هر نسخه‌ی جدیدتر،\n"
             "به انتخاب شما) بازتوزیع و/یا اصلاح کنید.\n"
             "متن کامل لایسنس: فایل LICENSE در ریپوی گیت‌هاب\n"
-            "سورس‌کد: https://github.com/thaarfknight-star/IAS-CMS\n\n"
+            "سورس‌کد: https://github.com/tahawp86/IAS-CMS\n\n"
             "IAS Viewer (Windows) — Copyright (C) 2026 Taha Arefi\n"
             "This program is free software: you can redistribute it and/or modify\n"
             "it under the terms of the GNU Affero General Public License as published\n"
