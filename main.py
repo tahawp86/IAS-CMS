@@ -5061,13 +5061,27 @@ class MainWindow(QMainWindow):
             if not username or not password:
                 return False
 
+            # (2.2.18) راستی‌آزمایی دو منبعی، عین صفحه‌ی ورود: اگر نام
+            # واردشده نام حساب داخل فایل لایسنس (app_user) باشد، فقط
+            # فایل لایسنس تصمیم می‌گیرد؛ وگرنه کاربران محلی. قبل از این
+            # فیکس، کاربر لایسنسی (که در users.json نیست) با رمز درست
+            # هم نمی‌توانست برنامه را ببندد.
             try:
-                um = UserManager()
-                user = um.verify(username, password)
-                if user:
-                    return True
+                from license import try_license_login
+                decides, lic_user = try_license_login(username, password)
             except Exception:
-                pass
+                decides, lic_user = False, None
+            if decides:
+                if lic_user:
+                    return True
+            else:
+                try:
+                    um = UserManager()
+                    user = um.verify(username, password)
+                    if user:
+                        return True
+                except Exception:
+                    pass
             QMessageBox.warning(self, "خطا",
                                 "نام کاربری یا رمز عبور اشتباه است.")
             return False
