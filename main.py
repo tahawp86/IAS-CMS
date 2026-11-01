@@ -2506,7 +2506,22 @@ class MainWindow(QMainWindow):
         _logo_icon = QIcon(LOGO_SHIELD)
         if not _logo_icon.isNull():
             self.setWindowIcon(_logo_icon)
-        self.setGeometry(100, 100, 1500, 780)
+        # (2.2.19) ریسپانسیو: هندسه‌ی اولیه از روی صفحه‌ی اصلی می‌آید،
+        # نه عدد ثابت ۱۵۰۰×۷۸۰ — روی نمایشگرهای کوچک‌تر، پنجره از صفحه
+        # بیرون نمی‌زند و وسط صفحه باز می‌شود.
+        try:
+            from PyQt6.QtGui import QGuiApplication as _QGA
+            _scr = _QGA.primaryScreen()
+            _ag = _scr.availableGeometry() if _scr is not None else None
+            if _ag is None:
+                raise RuntimeError("no screen")
+            from responsive import initial_window_size as _iws
+            _w, _h = _iws(_ag.width(), _ag.height())
+            _x = _ag.x() + max(0, (_ag.width() - _w) // 2)
+            _y = _ag.y() + max(0, (_ag.height() - _h) // 2)
+            self.setGeometry(_x, _y, _w, _h)
+        except Exception:
+            self.setGeometry(100, 100, 1500, 780)
 
         self.face_engine = FaceEngine()
         self.camera_store = CameraStore()
@@ -2882,15 +2897,26 @@ class MainWindow(QMainWindow):
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 7)
         self.splitter.setStretchFactor(2, 2)
-        total_w = max(self.width(), 1500)
-        right_w = total_w * 2 // 9        # عرض قبلی/بدون‌تغییرِ پنل راست
-        left_w = 200                       # عرض کوچک و ثابت پنل چپ
-        self.splitter.setSizes([left_w, total_w - left_w - right_w, right_w])
+        # (2.2.19) ریسپانسیو: اندازه‌های اولیه‌ی splitter از عرض واقعی
+        # پنجره می‌آیند، نه max(width, 1500) — روی صفحه‌های کوچک پنل‌ها
+        # شبکه‌ی دوربین را خفه نمی‌کنند. (کاربر بعداً با کشیدن لبه‌ها
+        # عوضشان می‌کند؛ این فقط اندازه‌ی شروع است.)
+        try:
+            from responsive import splitter_sizes as _ss
+            left_w, _grid_w, right_w = _ss(self.width())
+        except Exception:
+            total_w = max(self.width(), 1500)
+            left_w, right_w = 200, total_w * 2 // 9
+        self.splitter.setSizes([left_w, self.width() - left_w - right_w, right_w])
         # اندازه‌ی اولیه‌ی صریح برای دو پنل داخل ستون راست (۶۰٪ تشخیص چهره،
         # ۴۰٪ هشدار حریق/دود) - کاربر همچنان می‌تواند با کشیدن لبه‌ی بینشان
         # این نسبت را تغییر دهد.
-        right_h = max(self.height(), 780)
-        self.right_splitter.setSizes([right_h * 6 // 10, right_h * 4 // 10])
+        try:
+            from responsive import right_panel_heights as _rph
+            _top_h, _bot_h = _rph(self.height())
+        except Exception:
+            _top_h, _bot_h = self.height() * 6 // 10, self.height() * 4 // 10
+        self.right_splitter.setSizes([_top_h, _bot_h])
         # عرضی که پنل چپ قبل از مخفی‌شدن داشت، برای بازگرداندن آن هنگام کلیک
         # مجدد روی دکمه‌ی sidebar نگه‌داشته می‌شود.
         # (برگشت به رفتار action #207 به دستور کاربر، 2.0.12-beta: هیچ تنظیم

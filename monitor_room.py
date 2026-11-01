@@ -99,7 +99,19 @@ class MonitorWindow(QMainWindow):
         splitter.setStretchFactor(2, 0)
         self._splitter = splitter
         self.setCentralWidget(splitter)
-        self.resize(1280, 700)
+        # (2.2.19) ریسپانسیو: اندازه‌ی اولیه‌ی نما از صفحه می‌آید
+        # (۸۵٪ صفحه، سقف ۱۶۰۰×۹۰۰)؛ چیدمان ذخیره‌شده (open_floating با
+        # geom) سر جایش است و این فقط اندازه‌ی اولین بازشدن است.
+        try:
+            _scr = QGuiApplication.primaryScreen()
+            _ag = _scr.availableGeometry() if _scr is not None else None
+            if _ag is None:
+                raise RuntimeError("no screen")
+            from responsive import monitor_room_size as _mrs
+            _mw, _mh = _mrs(_ag.width(), _ag.height())
+            self.resize(_mw, _mh)
+        except Exception:
+            self.resize(1280, 700)
 
     @property
     def camera_grid(self):
